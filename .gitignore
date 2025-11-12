@@ -1,0 +1,6 @@
+/sqlviewer/
+/google-photo-api/node_modules
+/google-photo-api/.env
+/image-gen-api/node_modules
+/image-gen-api/.env
+/.env
