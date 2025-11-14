@@ -41,9 +41,10 @@ app.post("/generate-favicon", cors(), async (req, res) => {
     const { prompt } = req.body;
     console.log(`🎨 Generating favicon: "${prompt}"`);
 
+    // 1️⃣ Генеруємо 1024×1024 з прозорим фоном
     const result = await openai.images.generate({
       model: "gpt-image-1",
-      prompt: `${prompt}, centered object, transparent background, minimal flat favicon, no text`,
+      prompt: `${prompt}, centered object, transparent background, no text`,
       n: 1,
       size: "1024x1024",
       background: "transparent",
@@ -55,12 +56,12 @@ app.post("/generate-favicon", cors(), async (req, res) => {
     const sharp = (await import("sharp")).default;
     const buffer = Buffer.from(item.b64_json, "base64");
 
-    // 1️⃣ читаємо метадані
+    // 2️⃣ метадані для обрізки
     const meta = await sharp(buffer).metadata();
     const { width, height } = meta;
 
-    // 2️⃣ обрізаємо зліва та справа (наприклад, 10%)
-    const cropMargin = Math.round(width * 0.1); // 10% з кожного боку
+    // 3️⃣ обрізаємо 10% зліва/справа
+    const cropMargin = Math.round(width * 0.1);
     const cropped = await sharp(buffer)
       .extract({
         left: cropMargin,
@@ -70,7 +71,7 @@ app.post("/generate-favicon", cors(), async (req, res) => {
       })
       .toBuffer();
 
-    // 3️⃣ створюємо квадратне полотно 1024×1024
+    // 4️⃣ створюємо квадратне полотно 1024×1024
     const canvasSize = 1024;
     const canvas = await sharp({
       create: {
@@ -84,29 +85,71 @@ app.post("/generate-favicon", cors(), async (req, res) => {
         {
           input: cropped,
           top: 0,
-          left: Math.floor((canvasSize - (width - cropMargin * 2)) / 2),
+          left: Math.floor(
+            (canvasSize - (width - cropMargin * 2)) / 2
+          ),
         },
       ])
       .png()
       .toBuffer();
 
-    // 4️⃣ зменшуємо до 64×64
-    const resized = await sharp(canvas)
+    const trimmedCanvas = await sharp(canvas).trim().toBuffer();      
+    const { width: tw, height: th } = await sharp(trimmedCanvas).metadata();
+    const maxSize = Math.max(tw, th);
+
+    const squared = await sharp({
+      create: {
+        width: maxSize,
+        height: maxSize,
+        channels: 4,
+        background: { r: 0, g: 0, b: 0, alpha: 0 },
+      }
+    })
+      .composite([
+        {
+          input: trimmedCanvas,
+          top: Math.floor((maxSize - th) / 2),
+          left: Math.floor((maxSize - tw) / 2),
+        },
+      ])
+      .png()
+      .toBuffer();    
+    // 5️⃣ Фавікон 64×64
+    const favicon64 = await sharp(squared)
       .resize(64, 64, { fit: "cover" })
       .png({ quality: 95 })
       .toBuffer();
 
-    // 5️⃣ повертаємо base64
+    // 6️⃣ PWA sizes
+    const pwaSizes = [192, 256, 384, 512];
+
+    async function makePWAs() {
+      const out = {};
+      for (const size of pwaSizes) {
+      const img = await sharp(squared)
+        .resize(size, size)
+        .png({ quality: 95 })
+        .toBuffer();
+
+        out[size] = img.toString("base64");
+      }
+      return out;
+    }
+
+    const pwaIcons = await makePWAs();
+
+    // 7️⃣ Response JSON
     res.json({
       success: true,
-      favicon_base64: resized.toString("base64"),
+      favicon_base64: favicon64.toString("base64"),
+      pwa_icons: pwaIcons,
     });
+
   } catch (err) {
     console.error("❌ Favicon generation failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
-
 
 
 
@@ -201,7 +244,7 @@ app.post("/text", cors(), async (req, res) => {
       (wantsHtml ? "Return ONLY the HTML and nothing else." : "");
 
     const completion = await openai.chat.completions.create({
-      model: "gpt-5-mini",
+      model: "gpt-5",
       messages: [
         { role: "system", content: systemMessage },
         { role: "user", content: userMessage }
@@ -237,20 +280,39 @@ app.post("/translate-blade", cors(), async (req, res) => {
       });
     }
 
+// const systemMessage = `
+// You are a professional website translator specializing in Laravel Blade templates.
+// The website content is about **car rental services** (renting cars, booking, fleet, insurance, deals, locations, etc.).
+// Translate ONLY visible human-readable text into ${lang}, keeping the car rental context natural and professional.
+
+// Preserve all Blade directives (like @if, @foreach, @extends, @section, @yield),
+// variables ({{ }}, {!! !!}), HTML tags, structure, and indentation.
+// Do NOT translate or remove comments, Blade syntax, or HTML entities.
+
+// Return ONLY the translated Blade template — no explanations, no markdown, just the code.
+// Do NOT translate or modify $languageNames array.
+// `;
+
 const systemMessage = `
-You are a professional website translator specializing in Laravel Blade templates.
-The website content is about **car rental services** (renting cars, booking, fleet, insurance, deals, locations, etc.).
-Translate ONLY visible human-readable text into ${lang}, keeping the car rental context natural and professional.
+You are a professional website translator and content editor specializing in Laravel Blade templates.
+The website content is related to car rental services (booking, pricing, fleet, airport rentals, insurance, deals, locations, etc.).
 
-Preserve all Blade directives (like @if, @foreach, @extends, @section, @yield),
-variables ({{ }}, {!! !!}), HTML tags, structure, and indentation.
-Do NOT translate or remove comments, Blade syntax, or HTML entities.
+Your task is to translate all visible, human-readable text into ${lang}, but you are NOT limited to literal translation:
+- You may paraphrase, restructure sentences, or rewrite the meaning when necessary.
+- If a direct translation sounds unnatural, awkward, too literal, or unclear — rewrite it so it reads naturally for a native speaker.
+- You may improve clarity, flow, tone, and readability, while keeping the original intention and car-rental context.
 
-Return ONLY the translated Blade template — no explanations, no markdown, just the code.
-Do NOT translate or modify $languageNames array.
+STRICT PRESERVATION RULES:
+- Keep all Blade directives (@if, @foreach, @extends, @section, @yield, etc.).
+- Keep all variables ({{ }}, {!! !!}), HTML tags, attributes, classes, and indentation.
+- Do NOT modify JavaScript code, CSS, Blade logic, comments, arrays, or special placeholders (including $languageNames).
+- Do NOT translate or alter technical strings, URLs, routes, or template structure.
+
+Your output must:
+- Contain ONLY the translated Blade template (no explanations, no markdown, no comments).
+- Maintain the original structure exactly.
+- Rewrite only human-visible text content, ensuring a natural, professional tone for car-rental websites.
 `;
-
-
 
 
     const completion = await openai.chat.completions.create({
@@ -261,12 +323,12 @@ Do NOT translate or modify $languageNames array.
         { role: "user", content },
       ],
       max_completion_tokens: 50000,
-      reasoning_effort: "high", // make the model "think deeper"
-      verbosity: "high"         // produce longer and more detailed output
+      reasoning_effort: "medium", // make the model "think deeper"
+      verbosity: "medium"         // produce longer and more detailed output
     });
 
-    const translated =
-      completion?.choices?.[0]?.message?.content?.trim() || "";
+const translated =
+  (completion?.choices?.[0]?.message?.content?.trim() || "").replace(/—/g, "-");
 
     if (!translated) {
       throw new Error("No translated content received from GPT-5 mini.");
