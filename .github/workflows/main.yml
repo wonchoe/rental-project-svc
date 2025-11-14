@@ -16,16 +16,11 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Buildx with containerd backend (fixes cache export)
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v3
-        with:
-          install: true
-          driver: docker-container
-          driver-opts: |
-            image=moby/buildkit:v0.17.0
-            network=host
-            containerd-worker=true
+      # Create builder with docker-container driver (REQUIRED for cache)
+      - name: Create Buildx builder
+        run: |
+          docker buildx create --use --name api-builder --driver docker-container
+          docker buildx inspect --bootstrap
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -33,7 +28,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push with registry cache (works on ARM)
+      - name: Build and push with CACHE (supported backend)
         uses: docker/build-push-action@v5
         with:
           context: ./google-photo-api
