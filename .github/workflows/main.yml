@@ -16,7 +16,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Create builder with docker-container driver (REQUIRED for cache)
+      # Create buildx builder (без кешу так само потрібно)
       - name: Create Buildx builder
         run: |
           docker buildx create --use --name api-builder --driver docker-container
@@ -28,7 +28,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push with CACHE (supported backend)
+      - name: Build and push (без кешу)
         uses: docker/build-push-action@v5
         with:
           context: ./google-photo-api
@@ -38,5 +38,3 @@ jobs:
           tags: |
             wonchoe/google-photo-api:latest
             wonchoe/google-photo-api:${{ github.sha }}
-          cache-from: type=registry,ref=wonchoe/google-photo-api:buildcache
-          cache-to: type=registry,ref=wonchoe/google-photo-api:buildcache,mode=max
