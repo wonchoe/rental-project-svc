@@ -1,4 +1,4 @@
-name: Build and Push OpenAI generator
+name: OpenAI API
 
 on:
   push:
