@@ -16,27 +16,18 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Create Buildx builder
-        run: |
-          docker buildx create --use --name api-builder --driver docker-container
-          docker buildx inspect --bootstrap
-
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (NO CACHE)
-        uses: docker/build-push-action@v5
-        with:
-          context: ./google-photo-api
-          file: ./google-photo-api/Dockerfile
-          platforms: linux/arm64
-          push: true
-          no-cache: true
-          cache-from: type=inline
-          cache-to: type=inline
-          tags: |
-            wonchoe/google-photo-api:latest
-            wonchoe/google-photo-api:${{ github.sha }}
+      - name: Build image using docker (NO BUILDX)
+        run: |
+          docker build -t wonchoe/google-photo-api:latest ./google-photo-api
+          docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:${{ github.sha }}
+
+      - name: Push image
+        run: |
+          docker push wonchoe/google-photo-api:latest
+          docker push wonchoe/google-photo-api:${{ github.sha }}
