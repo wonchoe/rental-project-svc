@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - "google-photo-api/**"
-  workflow_dispatch:      
+  workflow_dispatch:
 
 jobs:
   build:
@@ -16,7 +16,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # КЕШ ДЛЯ DOCKER BUILDX LAYERS
+      # Create buildx with container driver (fixes cache support)
+      - name: Set up Docker Buildx (container driver)
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+          install: true
+
       - name: Restore Docker cache
         uses: actions/cache@v4
         with:
@@ -31,7 +37,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (ARM native) with cache
+      - name: Build and push (ARM) with cache
         uses: docker/build-push-action@v5
         with:
           context: ./google-photo-api
@@ -44,7 +50,6 @@ jobs:
           cache-from: type=local,src=/tmp/.buildx-cache
           cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
 
-      # ОНОВЛЕННЯ КЕШУ ПІСЛЯ БІЛДУ
       - name: Move updated cache
         run: |
           rm -rf /tmp/.buildx-cache
