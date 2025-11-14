@@ -40,4 +40,4 @@ jobs:
           cache-to: type=registry,ref=wonchoe/google-photo-api:buildcache,mode=max
           tags: |
             wonchoe/google-photo-api:latest
-            wonchoe/google-photo-api:build-${{ github.run_number }}
+            wonchoe/google-photo-api:${{ github.run_number }}
