@@ -24,7 +24,11 @@ jobs:
 
       - name: Build image using docker (NO BUILDX)
         run: |
-          docker build -t wonchoe/google-photo-api:latest ./google-photo-api
+          docker build \
+            -t wonchoe/google-photo-api:latest \
+            -f google-photo-api/Dockerfile \
+            google-photo-api
+
           docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:${{ github.sha }}
 
       - name: Push image
