@@ -16,31 +16,28 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          install: true
+          driver: docker-container
+
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Pull cache image (if exists)
-        run: |
-          docker pull wonchoe/google-photo-api:buildcache || true
-
-      - name: Build image using docker with REGISTRY CACHE
-        run: |
-          docker build \
-            --cache-from wonchoe/google-photo-api:buildcache \
-            -t wonchoe/google-photo-api:latest \
-            -t wonchoe/google-photo-api:${{ github.sha }} \
-            -f google-photo-api/Dockerfile \
-            google-photo-api
-
-      - name: Push image
-        run: |
-          docker push wonchoe/google-photo-api:latest
-          docker push wonchoe/google-photo-api:${{ github.sha }}
-
-      - name: Push cache layer
-        run: |
-          docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:buildcache
-          docker push wonchoe/google-photo-api:buildcache
+      # 🟢 Buildx with registry cache (NO PULL)
+      - name: Build and Push with Cache
+        uses: docker/build-push-action@v4
+        with:
+          context: ./google-photo-api
+          file: ./google-photo-api/Dockerfile
+          platforms: linux/arm64
+          push: true
+          cache-from: type=registry,ref=wonchoe/google-photo-api:buildcache
+          cache-to: type=registry,ref=wonchoe/google-photo-api:buildcache,mode=max
+          tags: |
+            wonchoe/google-photo-api:latest
+            wonchoe/google-photo-api:build-${{ github.run_number }}
