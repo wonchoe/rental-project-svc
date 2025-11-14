@@ -22,16 +22,25 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build image using docker (NO BUILDX)
+      - name: Pull cache image (if exists)
+        run: |
+          docker pull wonchoe/google-photo-api:buildcache || true
+
+      - name: Build image using docker with REGISTRY CACHE
         run: |
           docker build \
+            --cache-from wonchoe/google-photo-api:buildcache \
             -t wonchoe/google-photo-api:latest \
+            -t wonchoe/google-photo-api:${{ github.sha }} \
             -f google-photo-api/Dockerfile \
             google-photo-api
-
-          docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:${{ github.sha }}
 
       - name: Push image
         run: |
           docker push wonchoe/google-photo-api:latest
           docker push wonchoe/google-photo-api:${{ github.sha }}
+
+      - name: Push cache layer
+        run: |
+          docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:buildcache
+          docker push wonchoe/google-photo-api:buildcache
