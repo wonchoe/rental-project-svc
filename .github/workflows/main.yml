@@ -16,20 +16,16 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      # Create buildx with container driver (fixes cache support)
-      - name: Set up Docker Buildx (container driver)
+      # Buildx with containerd backend (fixes cache export)
+      - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
         with:
-          driver: docker-container
           install: true
-
-      - name: Restore Docker cache
-        uses: actions/cache@v4
-        with:
-          key: docker-cache-${{ runner.os }}-${{ github.sha }}
-          restore-keys: |
-            docker-cache-${{ runner.os }}-
-          path: /tmp/.buildx-cache
+          driver: docker-container
+          driver-opts: |
+            image=moby/buildkit:v0.17.0
+            network=host
+            containerd-worker=true
 
       - name: Log in to Docker Hub
         uses: docker/login-action@v3
@@ -37,7 +33,7 @@ jobs:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build and push (ARM) with cache
+      - name: Build and push with registry cache (works on ARM)
         uses: docker/build-push-action@v5
         with:
           context: ./google-photo-api
@@ -47,10 +43,5 @@ jobs:
           tags: |
             wonchoe/google-photo-api:latest
             wonchoe/google-photo-api:${{ github.sha }}
-          cache-from: type=local,src=/tmp/.buildx-cache
-          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
-
-      - name: Move updated cache
-        run: |
-          rm -rf /tmp/.buildx-cache
-          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+          cache-from: type=registry,ref=wonchoe/google-photo-api:buildcache
+          cache-to: type=registry,ref=wonchoe/google-photo-api:buildcache,mode=max
