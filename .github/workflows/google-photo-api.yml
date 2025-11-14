@@ -1,4 +1,4 @@
-name: Build and Push Google Photo API
+name: Google Photo API
 
 on:
   push:
