@@ -1,0 +1,50 @@
+name: Build and Push Google Photo API
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "google-photo-api/**"
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04-arm
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # КЕШ ДЛЯ DOCKER BUILDX LAYERS
+      - name: Restore Docker cache
+        uses: actions/cache@v4
+        with:
+          key: docker-cache-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            docker-cache-${{ runner.os }}-
+          path: /tmp/.buildx-cache
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Build and push (ARM native) with cache
+        uses: docker/build-push-action@v5
+        with:
+          context: ./google-photo-api
+          file: ./google-photo-api/Dockerfile
+          platforms: linux/arm64
+          push: true
+          tags: |
+            wonchoe/google-photo-api:latest
+            wonchoe/google-photo-api:${{ github.sha }}
+          cache-from: type=local,src=/tmp/.buildx-cache
+          cache-to: type=local,dest=/tmp/.buildx-cache-new,mode=max
+
+      # ОНОВЛЕННЯ КЕШУ ПІСЛЯ БІЛДУ
+      - name: Move updated cache
+        run: |
+          rm -rf /tmp/.buildx-cache
+          mv /tmp/.buildx-cache-new /tmp/.buildx-cache
