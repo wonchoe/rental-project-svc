@@ -29,7 +29,6 @@ jobs:
             -f google-photo-api/Dockerfile \
             google-photo-api
 
-          # ✔ додаємо тег по номеру збірки
           docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:${{ github.run_number }}
 
       - name: Push image
