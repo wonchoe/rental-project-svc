@@ -198,7 +198,7 @@ app.post("/generate", cors(), async (req, res) => {
       const webpPath = path.join(outputDir, webpName);
       fs.writeFileSync(webpPath, webpBuffer);
 
-      const baseUrl = `${req.protocol}://${req.get("host")}/output`;
+      const baseUrl = `https://${req.get("host")}/output`;
 
       images.push({
         index: index + 1,
