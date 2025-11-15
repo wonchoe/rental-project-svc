@@ -460,10 +460,27 @@ app.post("/style", cors(), async (req, res) => {
 
 
 
-app.listen(3001, () => {
-  console.log("✅ Deep article generator running on http://localhost:3001");
-});
+// 🔐 Simple Bearer Token Auth Middleware
+function authMiddleware(req, res, next) {
+  const authHeader = req.headers["authorization"];
+
+  if (!authHeader) {
+    return res.status(403).json({ error: "Missing Authorization header" });
+  }
+
+
+  const [type, token] = authHeader.split(" ");
+
+  if (type !== "Bearer" || token !== process.env.API_SECRET_TOKEN) {
+    return res.status(403).json({ error: "Invalid token" });
+  }
+
+  next();
+}
+
+app.use(authMiddleware);
+
 
 app.listen(process.env.PORT, () =>
-  console.log(`✅ ImageGen API running on port ${process.env.PORT}`)
+  console.log(`✅ OpenAI API running on port ${process.env.PORT}`)
 );
