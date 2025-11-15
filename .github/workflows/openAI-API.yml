@@ -1,11 +1,11 @@
-name: Build and Push Google Photo API
+name: OpenAI API
 
 on:
   push:
     branches:
       - main
     paths:
-      - "google-photo-api/**"
+      - "image-gen-api/**"
   workflow_dispatch:
 
 jobs:
@@ -25,14 +25,13 @@ jobs:
       - name: Build image using docker
         run: |
           docker build \
-            -t wonchoe/google-photo-api:latest \
-            -f google-photo-api/Dockerfile \
-            google-photo-api
+            -t wonchoe/image-gen-api:latest \
+            -f image-gen-api/Dockerfile \
+            image-gen-api
 
-          # ✔ додаємо тег по номеру збірки
-          docker tag wonchoe/google-photo-api:latest wonchoe/google-photo-api:${{ github.run_number }}
+          docker tag wonchoe/image-gen-api:latest wonchoe/image-gen-api:${{ github.run_number }}
 
       - name: Push image
         run: |
-          docker push wonchoe/google-photo-api:latest
-          docker push wonchoe/google-photo-api:${{ github.run_number }}
+          docker push wonchoe/image-gen-api:latest
+          docker push wonchoe/image-gen-api:${{ github.run_number }}
