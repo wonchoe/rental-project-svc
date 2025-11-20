@@ -21,11 +21,15 @@ app.use(cors({
 
 // 🔥 Дуже важливо — вручну відповісти на OPTIONS,
 // щоб preflight НІКОЛИ не ламався
-app.options("*", (req, res) => {
-  res.setHeader("Access-Control-Allow-Origin", "*");
-  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With");
-  res.sendStatus(204);
+// 🛑 Перехопити ВСІ OPTIONS до роутів
+app.use((req, res, next) => {
+  if (req.method === "OPTIONS") {
+    res.header("Access-Control-Allow-Origin", "*");
+    res.header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS");
+    res.header("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With");
+    return res.sendStatus(204);
+  }
+  next();
 });
 
 app.use(express.json());

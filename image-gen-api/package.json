@@ -1,4 +1,15 @@
 {
+  "type": "module",
+  "name": "image-gen-api",
+  "version": "1.0.0",
+  "description": "API service for generating images using OpenAI's DALL·E model",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon index.js"
+  },
+  "author": "Your Name",
+  "license": "MIT",
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
