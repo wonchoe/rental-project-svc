@@ -19,9 +19,7 @@ app.use(cors({
   credentials: false,
 }));
 
-// 🔥 Дуже важливо — вручну відповісти на OPTIONS,
-// щоб preflight НІКОЛИ не ламався
-// 🛑 Перехопити ВСІ OPTIONS до роутів
+
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     res.header("Access-Control-Allow-Origin", "*");
@@ -477,17 +475,15 @@ app.post("/style", cors(), async (req, res) => {
 
 
 
-// 🔐 Simple Bearer Token Auth Middleware
 function authMiddleware(req, res, next) {
-  const authHeader = req.headers["authorization"];
-
-  if (!authHeader) {
-    return res.status(403).json({ error: "Missing Authorization header" });
+  if (req.method === "OPTIONS") {
+    return next(); // never block OPTIONS
   }
 
+  const header = req.headers["authorization"];
+  if (!header) return res.status(403).json({ error: "Missing Authorization header" });
 
-  const [type, token] = authHeader.split(" ");
-
+  const [type, token] = header.split(" ");
   if (type !== "Bearer" || token !== process.env.API_SECRET_TOKEN) {
     return res.status(403).json({ error: "Invalid token" });
   }
