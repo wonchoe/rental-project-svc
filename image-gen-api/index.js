@@ -51,7 +51,7 @@ const sizeMap = {
 
 
 
-app.post("/generate-favicon", cors(), async (req, res) => {
+app.post("/generate-favicon", authMiddleware, async (req, res) => {
   try {
     const { prompt } = req.body;
     console.log(`🎨 Generating favicon: "${prompt}"`);
@@ -169,7 +169,7 @@ app.post("/generate-favicon", cors(), async (req, res) => {
 
 
 
-app.post("/generate", cors(), async (req, res) => {
+app.post("/generate", authMiddleware, async (req, res) => {
   try {
     const { prompt, n = 4, size = 1 } = req.body;
     const selectedSize = sizeMap[size] || sizeMap[1];
@@ -233,7 +233,7 @@ app.post("/generate", cors(), async (req, res) => {
   }
 });
 
-app.post("/text", cors(), async (req, res) => {
+app.post("/text", authMiddleware, async (req, res) => {
   try {
     console.log("🧠 Text generation request received.");
     const { prompt, format = "", max_tokens = 10096, temperature = 0.9 } = req.body;
@@ -283,7 +283,7 @@ app.post("/text", cors(), async (req, res) => {
 
 
 // --- Laravel Blade Translator (GPT-5 mini) ---
-app.post("/translate-blade", cors(), async (req, res) => {
+app.post("/translate-blade", authMiddleware, async (req, res) => {
   try {
     console.log("🌍 Translation request received.");
 
@@ -367,7 +367,7 @@ const translated =
 
 
 // --- Deep Article Route (Reasoning Model) ---
-app.post("/article", cors(), async (req, res) => {
+app.post("/article", authMiddleware, async (req, res) => {
   try {
     console.log("🧠 Deep article generation request received.");
     const { prompt } = req.body;
@@ -414,7 +414,7 @@ app.post("/article", cors(), async (req, res) => {
 });
 
 
-app.post("/style", cors(), async (req, res) => {
+app.post("/style", authMiddleware, async (req, res) => {
   try {
     console.log("🎨 Style generation request received.");
     const { prompt } = req.body;
