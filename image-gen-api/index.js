@@ -10,11 +10,23 @@ dotenv.config();
 
 const app = express();
 
-const options = {
-    origin: '*',
-};
+// 🔥 Максимально відкритий CORS (все дозволено)
+app.use(cors({
+  origin: "*",
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization", "Accept", "Origin", "X-Requested-With"],
+  exposedHeaders: ["Content-Length", "Content-Type"],
+  credentials: false,
+}));
 
-app.use(cors(options));
+// 🔥 Дуже важливо — вручну відповісти на OPTIONS,
+// щоб preflight НІКОЛИ не ламався
+app.options("*", (req, res) => {
+  res.setHeader("Access-Control-Allow-Origin", "*");
+  res.setHeader("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS");
+  res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, Accept, Origin, X-Requested-With");
+  res.sendStatus(204);
+});
 
 app.use(express.json());
 
@@ -24,16 +36,17 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const outputDir = path.join(process.cwd(), "output");
 if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 
-// Роздаємо статичні файли через /output/
+// Роздаємо статичні файли
 app.use("/output", express.static(outputDir));
 
 // 🎯 Мапа підтримуваних розмірів
 const sizeMap = {
-  1: "1024x1024", // квадрат
-  2: "1536x1024", // горизонтальне 16:9
-  3: "1024x1536", // вертикальне 9:16
+  1: "1024x1024",
+  2: "1536x1024",
+  3: "1024x1536",
   4: "auto"
 };
+
 
 
 app.post("/generate-favicon", cors(), async (req, res) => {
