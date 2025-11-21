@@ -20,6 +20,7 @@ app.use(cors({
 }));
 
 
+
 app.use((req, res, next) => {
   if (req.method === "OPTIONS") {
     res.header("Access-Control-Allow-Origin", "*");
@@ -315,18 +316,21 @@ The website content is related to car rental services (booking, pricing, fleet, 
 Your task is to translate all visible, human-readable text into ${lang}, but you are NOT limited to literal translation:
 - You may paraphrase, restructure sentences, or rewrite the meaning when necessary.
 - If a direct translation sounds unnatural, awkward, too literal, or unclear — rewrite it so it reads naturally for a native speaker.
-- You may improve clarity, flow, tone, and readability, while keeping the original intention and car-rental context.
+- Improve clarity, flow, tone, and readability, while maintaining the original intention.
 
-STRICT PRESERVATION RULES:
-- Keep all Blade directives (@if, @foreach, @extends, @section, @yield, etc.).
-- Keep all variables ({{ }}, {!! !!}), HTML tags, attributes, classes, and indentation.
-- Do NOT modify JavaScript code, CSS, Blade logic, comments, arrays, or special placeholders (including $languageNames).
-- Do NOT translate or alter technical strings, URLs, routes, or template structure.
+STRICT PRESERVATION RULES (DO NOT MODIFY ANY OF THESE):
+- DO NOT change, rewrite, translate, or alter ANY URLs, links, image sources, asset paths, filenames, folders, or file extensions (jpg/png/webp/css/js/svg).
+- DO NOT change strings inside /assets/..., /images/..., /css/..., /js/..., or any other static resource paths.
+- DO NOT modify JavaScript, CSS, Blade directives (@if, @foreach, @extends, etc.), variables ({{ }}, {!! !!}), comments, inline styles, classes, indentation, or HTML structure.
+- DO NOT touch technical strings, slugs, SEO keywords inside URLs, or dynamic parameters.
 
-Your output must:
-- Contain ONLY the translated Blade template (no explanations, no markdown, no comments).
-- Maintain the original structure exactly.
-- Rewrite only human-visible text content, ensuring a natural, professional tone for car-rental websites.
+TRANSLATE ONLY:
+- Human-visible text content inside HTML tags.
+- Ignore alt attributes of images if they contain slugs or filenames.
+
+OUTPUT RULES:
+- Output ONLY the translated Blade template (no explanations, notes, markdown, or commentary).
+- Structure and formatting must remain 100% identical to the input.
 `;
 
 
