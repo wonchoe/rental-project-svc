@@ -5,7 +5,7 @@ services:
     build: .
     container_name: google-photo-api
     ports:
-      - "3002:3002"
+      - "3006:3006"
     env_file:
       - .env
     restart: unless-stopped

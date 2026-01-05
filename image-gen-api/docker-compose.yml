@@ -5,7 +5,10 @@ services:
     build: .
     container_name: image-gen-api
     ports:
-      - "3001:3001"
+      - "3005:3005"
     env_file:
       - .env
     restart: unless-stopped
+    volumes:
+      - ./index.js:/app/index.js:ro
+      - ./translation-jobs.js:/app/translation-jobs.js:ro
