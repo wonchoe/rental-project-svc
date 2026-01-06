@@ -77,6 +77,28 @@ app.use((req, res, next) => {
 });
 
 // ============================================
+// DEBUG ENDPOINTS
+// ============================================
+
+// Health check endpoint
+app.get('/api/health', (req, res) => {
+  res.json({ 
+    status: 'ok',
+    port: PORT,
+    env: {
+      DB_HOST,
+      DB_PORT,
+      DB_USER,
+      DB_NAME,
+      hasPassword: !!DB_PASS,
+      envFileExists: fs.existsSync(envPath)
+    }
+  });
+});
+
+// CORS
+
+// ============================================
 // API ENDPOINTS
 // ============================================
 
@@ -101,7 +123,14 @@ app.get('/api/zones', async (req, res) => {
     res.json(zones);
   } catch (err) {
     console.error('[API] /zones error:', err.message);
-    res.status(500).json({ error: err.message, endpoint: '/api/zones' });
+    console.error('[API] /zones error code:', err.code);
+    console.error('[API] /zones full error:', err);
+    res.status(500).json({ 
+      error: err.message, 
+      code: err.code,
+      endpoint: '/api/zones',
+      hint: err.code === 'PROTOCOL_CONNECTION_LOST' ? 'DB connection lost' : 'DB query failed'
+    });
   }
 });
 
