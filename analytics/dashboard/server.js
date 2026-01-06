@@ -6,12 +6,29 @@
 const fs = require('fs');
 const path = require('path');
 
-// Check if .env file exists
-const envPath = path.join(__dirname, '.env');
-console.log(`[Config] Looking for .env at: ${envPath}`);
-console.log(`[Config] .env exists: ${fs.existsSync(envPath)}`);
+// .env is in parent directory (/app/.env), not in dashboard directory
+// Try multiple paths: /app/.env, parent dir, or current dir
+const possiblePaths = [
+  '/app/.env',                              // Kubernetes mount path
+  path.join(__dirname, '../.env'),          // Parent directory
+  path.join(__dirname, '.env')              // Current directory (fallback)
+];
 
-require('dotenv').config({ path: envPath });
+let envPath = null;
+for (const p of possiblePaths) {
+  if (fs.existsSync(p)) {
+    envPath = p;
+    console.log(`[Config] Found .env at: ${envPath}`);
+    break;
+  }
+}
+
+if (!envPath) {
+  console.warn(`[Config] ⚠️ .env not found in any of: ${possiblePaths.join(', ')}`);
+} else {
+  console.log(`[Config] Loading .env from: ${envPath}`);
+  require('dotenv').config({ path: envPath });
+}
 
 const express = require('express');
 const mysql = require('mysql2/promise');

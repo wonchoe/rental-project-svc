@@ -10,7 +10,7 @@ COPY package*.json ./
 # Встановлюємо залежності для scheduler
 RUN npm ci --only=production
 
-# Копіюємо код scheduler
+# Копіюємо код scheduler (включно з wait-for-env.js)
 COPY *.js ./
 
 # Копіюємо dashboard папку
