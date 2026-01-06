@@ -3,24 +3,66 @@
  * Professional analytics visualization
  */
 
-require('dotenv').config();
+const fs = require('fs');
+const path = require('path');
+
+// Check if .env file exists
+const envPath = path.join(__dirname, '.env');
+console.log(`[Config] Looking for .env at: ${envPath}`);
+console.log(`[Config] .env exists: ${fs.existsSync(envPath)}`);
+
+require('dotenv').config({ path: envPath });
+
 const express = require('express');
 const mysql = require('mysql2/promise');
-const path = require('path');
 
 const app = express();
 const PORT = process.env.DASHBOARD_PORT || 3030;
 
+// Use DB_HOST from .env (should contain the actual production MySQL address)
+const DB_HOST = process.env.DB_HOST;
+const DB_PORT = process.env.DB_PORT || 3306;
+const DB_USER = process.env.DB_USERNAME;
+const DB_PASS = process.env.DB_PASSWORD;
+const DB_NAME = process.env.DB_DATABASE;
+
+if (!DB_HOST || !DB_USER || !DB_PASS || !DB_NAME) {
+  console.error('[Database] ❌ Missing required environment variables:');
+  console.error(`   DB_HOST: ${DB_HOST ? '✓' : '✗'}`);
+  console.error(`   DB_USERNAME: ${DB_USER ? '✓' : '✗'}`);
+  console.error(`   DB_PASSWORD: ${DB_PASS ? '✓' : '✗'}`);
+  console.error(`   DB_DATABASE: ${DB_NAME ? '✓' : '✗'}`);
+  console.error('[Config] All environment variables:');
+  Object.keys(process.env).sort().forEach(key => {
+    const value = key.includes('PASSWORD') || key.includes('KEY') ? '***' : process.env[key];
+    if (key.startsWith('DB_') || key.includes('CLOUDFLARE') || key.includes('ACCOUNT') || key.includes('ZONE')) {
+      console.error(`   ${key}: ${value}`);
+    }
+  });
+}
+
+console.log(`[Server] Starting on port ${PORT}`);
+console.log(`[Database] Connecting to ${DB_HOST}:${DB_PORT}/${DB_NAME}`);
+console.log(`[Database] User: ${DB_USER}`);
+
 // Database connection pool
 const pool = mysql.createPool({
-  host: process.env.DB_HOST || '127.0.0.1',
-  port: process.env.DB_PORT || 3306,
-  user: process.env.DB_USERNAME,
-  password: process.env.DB_PASSWORD,
-  database: process.env.DB_DATABASE,
+  host: DB_HOST,
+  port: DB_PORT,
+  user: DB_USER,
+  password: DB_PASS,
+  database: DB_NAME,
   waitForConnections: true,
   connectionLimit: 10,
   queueLimit: 0
+});
+
+// Test database connection
+pool.getConnection().then(conn => {
+  console.log('[Database] ✅ Connection successful');
+  conn.release();
+}).catch(err => {
+  console.error('[Database] ❌ Connection failed:', err.message);
 });
 
 // Serve static files
@@ -58,8 +100,8 @@ app.get('/api/zones', async (req, res) => {
     `);
     res.json(zones);
   } catch (err) {
-    console.error('Error fetching zones:', err);
-    res.status(500).json({ error: err.message });
+    console.error('[API] /zones error:', err.message);
+    res.status(500).json({ error: err.message, endpoint: '/api/zones' });
   }
 });
 
