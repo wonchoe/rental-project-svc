@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="uk" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cloudflare Analytics Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'sans-serif'] },
+          colors: {
+            dark: { 800: '#1e1e2e', 900: '#11111b', 700: '#313244' },
+            accent: { 500: '#f97316', 600: '#ea580c' }
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body { font-family: 'Inter', sans-serif; }
+    .glass { background: rgba(30, 30, 46, 0.8); backdrop-filter: blur(10px); }
+    .gradient-border { background: linear-gradient(135deg, #f97316, #8b5cf6, #06b6d4); }
+    .card-glow:hover { box-shadow: 0 0 30px rgba(249, 115, 22, 0.2); }
+    .scrollbar-thin::-webkit-scrollbar { width: 6px; }
+    .scrollbar-thin::-webkit-scrollbar-track { background: #1e1e2e; }
+    .scrollbar-thin::-webkit-scrollbar-thumb { background: #313244; border-radius: 3px; }
+    .animate-pulse-slow { animation: pulse 3s infinite; }
+    .stat-card { transition: all 0.3s ease; }
+    .stat-card:hover { transform: translateY(-2px); }
+    @keyframes gradient { 0%,100% { background-position: 0% 50%; } 50% { background-position: 100% 50%; } }
+    .animate-gradient { background-size: 200% 200%; animation: gradient 3s ease infinite; }
+    .apexcharts-tooltip { background: #1e1e2e !important; border: 1px solid #313244 !important; }
+    .apexcharts-tooltip-title { background: #313244 !important; }
+  </style>
+</head>
+<body class="bg-dark-900 text-gray-100 min-h-screen">
+  <!-- Navigation -->
+  <nav class="fixed top-0 left-0 right-0 z-50 glass border-b border-dark-700">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+      <div class="flex items-center justify-between h-16">
+        <div class="flex items-center space-x-4">
+          <div class="w-10 h-10 rounded-xl bg-gradient-to-br from-orange-500 to-purple-600 flex items-center justify-center">
+            <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"></path>
+            </svg>
+          </div>
+          <h1 class="text-xl font-bold bg-gradient-to-r from-orange-400 to-purple-400 bg-clip-text text-transparent">
+            <i class="fas fa-chart-line mr-2"></i>Cloudflare Analytics
+          </h1>
+        </div>
+        
+        <!-- Navigation Menu -->
+        <div class="flex items-center space-x-2">
+          <button onclick="showPage('dashboard')" class="nav-btn px-4 py-2 rounded-lg text-sm font-medium transition-all" data-page="dashboard">
+            <i class="fas fa-chart-bar mr-1"></i> Dashboard
+          </button>
+          <button onclick="showPage('sites')" class="nav-btn px-4 py-2 rounded-lg text-sm font-medium transition-all" data-page="sites">
+            <i class="fas fa-globe mr-1"></i> Sites
+          </button>
+          <button onclick="showPage('trends')" class="nav-btn px-4 py-2 rounded-lg text-sm font-medium transition-all" data-page="trends">
+            <i class="fas fa-chart-line mr-1"></i> Trends
+          </button>
+          <button onclick="showPage('security')" class="nav-btn px-4 py-2 rounded-lg text-sm font-medium transition-all" data-page="security">
+            <i class="fas fa-shield-alt mr-1"></i> Security
+          </button>
+          <button onclick="showPage('geo')" class="nav-btn px-4 py-2 rounded-lg text-sm font-medium transition-all" data-page="geo">
+            <i class="fas fa-map-marked-alt mr-1"></i> Geography
+          </button>
+        </div>
+
+        <!-- Period Selector -->
+        <div class="flex items-center space-x-2">
+          <select id="periodSelect" onchange="changePeriod(this.value)" class="bg-dark-700 border border-dark-700 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+            <option value="1">Today</option>
+            <option value="7" selected>7 days</option>
+            <option value="14">14 days</option>
+            <option value="30">30 days</option>
+          </select>
+          <button onclick="refreshData()" class="p-2 bg-dark-700 rounded-lg hover:bg-dark-800 transition-colors">
+            <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path>
+            </svg>
+          </button>
+          <div id="lastUpdate" class="text-xs text-gray-500"></div>
+        </div>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Main Content -->
+  <main class="pt-20 pb-8 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
+    <!-- Dashboard Page -->
+    <div id="page-dashboard" class="page-content">
+      <!-- Stats Cards -->
+      <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="stat-card glass rounded-2xl p-5 border border-dark-700 card-glow">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-gray-400 text-sm">Visitors</span>
+            <i class="fas fa-users text-2xl text-blue-400"></i>
+          </div>
+          <div id="stat-visitors" class="text-3xl font-bold text-white">-</div>
+          <div id="stat-visitors-change" class="text-sm mt-1"></div>
+        </div>
+        
+        <div class="stat-card glass rounded-2xl p-5 border border-dark-700 card-glow">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-gray-400 text-sm">Requests</span>
+            <i class="fas fa-paper-plane text-2xl text-purple-400"></i>
+          </div>
+          <div id="stat-requests" class="text-3xl font-bold text-white">-</div>
+          <div id="stat-requests-change" class="text-sm mt-1"></div>
+        </div>
+        
+        <div class="stat-card glass rounded-2xl p-5 border border-dark-700 card-glow">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-gray-400 text-sm">Traffic</span>
+            <i class="fas fa-exchange-alt text-2xl text-cyan-400"></i>
+          </div>
+          <div id="stat-bandwidth" class="text-3xl font-bold text-white">-</div>
+          <div id="stat-bandwidth-cached" class="text-sm text-green-400 mt-1"></div>
+        </div>
+        
+        <div class="stat-card glass rounded-2xl p-5 border border-dark-700 card-glow">
+          <div class="flex items-center justify-between mb-3">
+            <span class="text-gray-400 text-sm">Threats</span>
+            <i class="fas fa-shield-alt text-2xl text-red-400"></i>
+          </div>
+          <div id="stat-threats" class="text-3xl font-bold text-red-400">-</div>
+          <div class="text-sm text-gray-500 mt-1">blocked</div>
+        </div>
+      </div>
+
+      <!-- Charts Row 1 -->
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4 flex items-center">
+            <span class="w-2 h-2 bg-orange-500 rounded-full mr-2"></span>
+            Traffic by Day
+          </h3>
+          <div id="chart-traffic" class="h-72"></div>
+        </div>
+        
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4 flex items-center">
+            <span class="w-2 h-2 bg-purple-500 rounded-full mr-2"></span>
+            Visitors by Day
+          </h3>
+          <div id="chart-visitors" class="h-72"></div>
+        </div>
+      </div>
+
+      <!-- Charts Row 2 -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4 flex items-center">
+            <span class="w-2 h-2 bg-cyan-500 rounded-full mr-2"></span>
+            HTTP Status Codes
+          </h3>
+          <div id="chart-status" class="h-64"></div>
+        </div>
+        
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4 flex items-center">
+            <span class="w-2 h-2 bg-green-500 rounded-full mr-2"></span>
+            Bandwidth: Cached vs Uncached
+          </h3>
+          <div id="chart-cache" class="h-64"></div>
+        </div>
+        
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4 flex items-center">
+            <span class="w-2 h-2 bg-yellow-500 rounded-full mr-2"></span>
+            Encryption Status
+          </h3>
+          <div id="chart-encryption" class="h-64"></div>
+        </div>
+      </div>
+
+      <!-- Sites Table -->
+      <div class="glass rounded-2xl p-6 border border-dark-700">
+        <h3 class="text-lg font-semibold mb-4"><i class="fas fa-table mr-2"></i>Sites Statistics</h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead>
+              <tr class="text-gray-400 border-b border-dark-700">
+                <th class="text-left py-3 px-4">Domain</th>
+                <th class="text-right py-3 px-4">Visitors</th>
+                <th class="text-right py-3 px-4">Page Views</th>
+                <th class="text-right py-3 px-4">Requests</th>
+                <th class="text-right py-3 px-4">Traffic</th>
+                <th class="text-right py-3 px-4">Threats</th>
+                <th class="text-center py-3 px-4">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="sites-table-body">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- Sites Page -->
+    <div id="page-sites" class="page-content hidden">
+      <div class="mb-6">
+        <h2 class="text-2xl font-bold mb-2"><i class="fas fa-globe mr-2"></i>All Sites</h2>
+        <p class="text-gray-400">Detailed statistics for each domain</p>
+      </div>
+      
+      <div id="sites-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+      </div>
+    </div>
+
+    <!-- Site Detail Page -->
+    <div id="page-site-detail" class="page-content hidden">
+      <div class="mb-6 flex items-center justify-between">
+        <div>
+          <button onclick="showPage('sites')" class="text-orange-400 hover:text-orange-300 mb-2 flex items-center">
+            <i class="fas fa-arrow-left mr-2"></i>Back to Sites
+          </button>
+          <h2 id="site-detail-name" class="text-2xl font-bold"></h2>
+        </div>
+      </div>
+      
+      <div id="site-detail-content"></div>
+    </div>
+
+    <!-- Security Page -->
+    <div id="page-security" class="page-content hidden">
+      <div class="mb-6">
+        <h2 class="text-2xl font-bold mb-2"><i class="fas fa-shield-alt mr-2"></i>Security</h2>
+        <p class="text-gray-400">Threats and attacks analysis</p>
+      </div>
+      
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4">Threats by Site</h3>
+          <div id="chart-threats-by-site" class="h-72"></div>
+        </div>
+        
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4">Threats by Country</h3>
+          <div id="chart-threats-by-country" class="h-72"></div>
+        </div>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 border border-dark-700">
+        <h3 class="text-lg font-semibold mb-4">Threats Trend</h3>
+        <div id="chart-threats-trend" class="h-64"></div>
+      </div>
+    </div>
+
+    <!-- Trends Page -->
+    <div id="page-trends" class="page-content hidden">
+      <div class="mb-6">
+        <h2 class="text-2xl font-bold mb-2"><i class="fas fa-chart-line mr-2"></i>Daily Trends</h2>
+        <p class="text-gray-400">Compare metrics across all sites over time</p>
+      </div>
+      
+      <!-- Filters Panel -->
+      <div class="glass rounded-2xl p-6 border border-dark-700 mb-6">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+          <!-- Metric Selector -->
+          <div>
+            <label class="block text-sm font-medium text-gray-400 mb-2">
+              <i class="fas fa-chart-area mr-1"></i> Metric
+            </label>
+            <select id="trends-metric" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+              <option value="unique_visitors">Unique Visitors</option>
+              <option value="requests">Requests</option>
+              <option value="bandwidth_bytes">Bandwidth</option>
+              <option value="page_views">Page Views</option>
+              <option value="threats">Threats</option>
+              <option value="cached_requests">Cached Requests</option>
+              <option value="encrypted_requests">Encrypted Requests</option>
+            </select>
+          </div>
+          
+          <!-- Days Selector -->
+          <div>
+            <label class="block text-sm font-medium text-gray-400 mb-2">
+              <i class="fas fa-calendar-alt mr-1"></i> Time Period
+            </label>
+            <select id="trends-days" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+              <option value="2">Last 2 Days</option>
+              <option value="7" selected>Last 7 Days</option>
+              <option value="14">Last 14 Days</option>
+              <option value="30">Last 30 Days</option>
+              <option value="90">Last 3 Months</option>
+              <option value="180">Last 6 Months</option>
+              <option value="365">Last Year</option>
+              <option value="10000">All Time</option>
+            </select>
+          </div>
+          
+          <!-- Sort Selector -->
+          <div>
+            <label class="block text-sm font-medium text-gray-400 mb-2">
+              <i class="fas fa-sort mr-1"></i> Sort By
+            </label>
+            <select id="trends-sort" class="w-full bg-dark-700 border border-dark-600 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-orange-500">
+              <option value="name_asc">Site Name (A-Z)</option>
+              <option value="name_desc">Site Name (Z-A)</option>
+              <option value="id_asc">Zone ID (Oldest)</option>
+              <option value="id_desc">Zone ID (Newest)</option>
+            </select>
+          </div>
+        </div>
+        
+        <!-- Site Checkboxes -->
+        <div class="mt-4">
+          <div class="border-t border-dark-600 pt-4">
+            <div class="flex items-center justify-between mb-3">
+              <label class="text-sm font-medium text-gray-400"><i class="fas fa-filter mr-1"></i> Select Sites</label>
+              <div class="space-x-2">
+                <button onclick="selectAllSites()" class="text-xs text-blue-400 hover:text-blue-300">Select All</button>
+                <button onclick="deselectAllSites()" class="text-xs text-gray-400 hover:text-gray-300">Deselect All</button>
+              </div>
+            </div>
+            <div id="site-checkboxes" class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 max-h-48 overflow-y-auto scrollbar-thin">
+              <!-- Checkboxes will be populated here -->
+            </div>
+          </div>
+        </div>
+        
+        <!-- Chart Options -->
+        <div class="mt-4 border-t border-dark-600 pt-4">
+          <label class="flex items-center text-sm font-medium text-gray-400 cursor-pointer">
+            <input type="checkbox" id="trends-show-labels" checked onchange="renderTrendsCharts()" class="w-4 h-4 text-orange-500 bg-dark-700 border-dark-600 rounded focus:ring-orange-500 mr-2">
+            <i class="fas fa-tag mr-1"></i> Show Date Labels
+          </label>
+        </div>
+      </div>
+      
+      <!-- Charts Grid -->
+      <div id="trends-charts-container" class="grid grid-cols-1 gap-6 mb-6">
+        <!-- Charts will be populated here -->
+      </div>
+      
+      <!-- Pagination -->
+      <div id="trends-pagination" class="flex items-center justify-center space-x-2">
+        <!-- Pagination will be populated here -->
+      </div>
+    </div>
+
+    <!-- Geo Page -->
+    <div id="page-geo" class="page-content hidden">
+      <div class="mb-6">
+        <h2 class="text-2xl font-bold mb-2"><i class="fas fa-map-marked-alt mr-2"></i>Geography</h2>
+        <p class="text-gray-400">Traffic distribution by country</p>
+      </div>
+      
+      <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4">Top 20 Countries by Requests</h3>
+          <div id="chart-countries" class="h-96"></div>
+        </div>
+        
+        <div class="glass rounded-2xl p-6 border border-dark-700">
+          <h3 class="text-lg font-semibold mb-4">Traffic Distribution</h3>
+          <div id="chart-countries-pie" class="h-96"></div>
+        </div>
+      </div>
+      
+      <div class="glass rounded-2xl p-6 border border-dark-700">
+        <h3 class="text-lg font-semibold mb-4">Detailed Country Table</h3>
+        <div class="overflow-x-auto max-h-96 scrollbar-thin">
+          <table class="w-full text-sm">
+            <thead class="sticky top-0 bg-dark-800">
+              <tr class="text-gray-400 border-b border-dark-700">
+                <th class="text-left py-3 px-4">#</th>
+                <th class="text-left py-3 px-4">Country</th>
+                <th class="text-right py-3 px-4">Requests</th>
+                <th class="text-right py-3 px-4">Traffic</th>
+                <th class="text-right py-3 px-4">Threats</th>
+                <th class="text-right py-3 px-4">% of Total</th>
+              </tr>
+            </thead>
+            <tbody id="countries-table-body">
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    // ============================================
+    // GLOBAL STATE
+    // ============================================
+    let currentPeriod = 7;
+    let currentPage = 'dashboard';
+    let chartsInstances = {};
+    let zonesData = [];
+
+    // ============================================
+    // UTILITY FUNCTIONS
+    // ============================================
+    const formatNumber = (num) => {
+      if (!num) return '0';
+      num = parseInt(num);
+      if (num >= 1e9) return (num / 1e9).toFixed(2) + 'B';
+      if (num >= 1e6) return (num / 1e6).toFixed(2) + 'M';
+      if (num >= 1e3) return (num / 1e3).toFixed(1) + 'K';
+      return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+    };
+
+    const formatBytes = (bytes) => {
+      if (bytes >= 1e12) return (bytes / 1e12).toFixed(2) + ' TB';
+      if (bytes >= 1e9) return (bytes / 1e9).toFixed(2) + ' GB';
+      if (bytes >= 1e6) return (bytes / 1e6).toFixed(2) + ' MB';
+      if (bytes >= 1e3) return (bytes / 1e3).toFixed(2) + ' KB';
+      return bytes + ' B';
+    };
+
+    const formatDate = (dateStr) => {
+      const date = new Date(dateStr);
+      return date.toLocaleDateString('uk-UA', { day: 'numeric', month: 'short' });
+    };
+
+    const getChangeIndicator = (current, previous) => {
+      if (!previous) return '';
+      const change = ((current - previous) / previous * 100).toFixed(1);
+      const isUp = change >= 0;
+      return `<span class="${isUp ? 'text-green-400' : 'text-red-400'}">${isUp ? '↑' : '↓'} ${Math.abs(change)}%</span>`;
+    };
+
+    const countryNames = {
+      US: '🇺🇸 США', VN: '🇻🇳 В\'єтнам', KR: '🇰🇷 Корея', NL: '🇳🇱 Нідерланди',
+      IN: '🇮🇳 Індія', TW: '🇹🇼 Тайвань', CA: '🇨🇦 Канада', GB: '🇬🇧 UK',
+      BR: '🇧🇷 Бразилія', JP: '🇯🇵 Японія', DE: '🇩🇪 Німеччина', FR: '🇫🇷 Франція',
+      AU: '🇦🇺 Австралія', RU: '🇷🇺 Росія', UA: '🇺🇦 Україна', PL: '🇵🇱 Польща',
+      SG: '🇸🇬 Сінгапур', HK: '🇭🇰 Гонконг', IT: '🇮🇹 Італія', ES: '🇪🇸 Іспанія',
+      CN: '🇨🇳 Китай', ID: '🇮🇩 Індонезія', TH: '🇹🇭 Таїланд', MX: '🇲🇽 Мексика',
+      AR: '🇦🇷 Аргентина', PH: '🇵🇭 Філіппіни', MY: '🇲🇾 Малайзія', XX: '🌍 Невідомо'
+    };
+
+    const getCountryName = (code) => countryNames[code] || `🌍 ${code}`;
+
+    // ============================================
+    // CHART CONFIGURATION
+    // ============================================
+    const chartDefaults = {
+      chart: {
+        background: 'transparent',
+        foreColor: '#9ca3af',
+        toolbar: { show: false },
+        animations: { enabled: true, easing: 'easeinout', speed: 800 },
+        fontFamily: 'Inter, sans-serif'
+      },
+      grid: { borderColor: '#313244', strokeDashArray: 3 },
+      tooltip: { theme: 'dark' },
+      stroke: { curve: 'smooth', width: 2 },
+      fill: { type: 'gradient', gradient: { opacityFrom: 0.4, opacityTo: 0.1 } },
+      dataLabels: {
+        enabled: false,
+        style: { fontSize: '11px', fontWeight: 400 }
+      },
+      xaxis: {
+        labels: { style: { fontSize: '11px', fontWeight: 400 } }
+      },
+      yaxis: {
+        labels: { style: { fontSize: '11px', fontWeight: 400 } }
+      }
+    };
+
+    // ============================================
+    // API FUNCTIONS
+    // ============================================
+    const api = {
+      async get(endpoint) {
+        const response = await fetch(`/api${endpoint}`);
+        if (!response.ok) throw new Error(`API Error: ${response.statusText}`);
+        return response.json();
+      }
+    };
+
+    // ============================================
+    // PAGE NAVIGATION
+    // ============================================
+    function showPage(page, data = null) {
+      currentPage = page;
+      
+      document.querySelectorAll('.page-content').forEach(el => el.classList.add('hidden'));
+      document.querySelectorAll('.nav-btn').forEach(btn => {
+        btn.classList.remove('bg-orange-500', 'text-white');
+        btn.classList.add('text-gray-400', 'hover:text-white', 'hover:bg-dark-700');
+      });
+      
+      const activeBtn = document.querySelector(`[data-page="${page}"]`);
+      if (activeBtn) {
+        activeBtn.classList.add('bg-orange-500', 'text-white');
+        activeBtn.classList.remove('text-gray-400', 'hover:text-white', 'hover:bg-dark-700');
+      }
+      
+      const pageEl = document.getElementById(`page-${page}`);
+      if (pageEl) pageEl.classList.remove('hidden');
+      
+      // Load page data
+      switch(page) {
+        case 'dashboard': loadDashboard(); break;
+        case 'sites': loadSitesPage(); break;
+        case 'trends': loadTrendsPage(); break;
+        case 'security': loadSecurityPage(); break;
+        case 'geo': loadGeoPage(); break;
+        case 'site-detail': loadSiteDetail(data); break;
+      }
+    }
+
+    function changePeriod(days) {
+      currentPeriod = parseInt(days);
+      refreshData();
+    }
+
+    function refreshData() {
+      showPage(currentPage);
+          document.getElementById('lastUpdate').textContent = `Updated: ${new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' })}`;
+    }
+
+    // ============================================
+    // DASHBOARD PAGE
+    // ============================================
+    async function loadDashboard() {
+      try {
+        const [overview, daily, zones] = await Promise.all([
+          api.get(`/dashboard/overview?days=${currentPeriod}`),
+          api.get(`/analytics/daily?days=${currentPeriod}`),
+          api.get('/zones')
+        ]);
+
+        zonesData = zones;
+        
+        // Update stats - convert strings to numbers
+        const { totals, comparison, topZones } = overview;
+        const visitors = parseInt(totals.total_visitors) || 0;
+        const requests = parseInt(totals.total_requests) || 0;
+        const bandwidth = parseInt(totals.total_bandwidth) || 0;
+        const threats = parseInt(totals.total_threats) || 0;
+        const cached = parseInt(totals.total_cached) || 0;
+        
+        document.getElementById('stat-visitors').textContent = formatNumber(visitors);
+        document.getElementById('stat-requests').textContent = formatNumber(requests);
+        document.getElementById('stat-bandwidth').textContent = formatBytes(bandwidth);
+        document.getElementById('stat-threats').textContent = formatNumber(threats);
+        
+        const cachePercent = bandwidth > 0 
+          ? ((cached / bandwidth) * 100).toFixed(1) 
+          : 0;
+        document.getElementById('stat-bandwidth-cached').textContent = `${cachePercent}% cached`;
+
+        if (comparison.length >= 2) {
+          const today = { visitors: parseInt(comparison[0].visitors) || 0, requests: parseInt(comparison[0].requests) || 0 };
+          const yesterday = { visitors: parseInt(comparison[1].visitors) || 0, requests: parseInt(comparison[1].requests) || 0 };
+          document.getElementById('stat-visitors-change').innerHTML = getChangeIndicator(today.visitors, yesterday.visitors);
+          document.getElementById('stat-requests-change').innerHTML = getChangeIndicator(today.requests, yesterday.requests);
+        }
+
+        // Traffic chart
+        renderChart('chart-traffic', {
+          ...chartDefaults,
+          chart: { ...chartDefaults.chart, type: 'area', height: 280 },
+          series: [{
+            name: 'Requests',
+            data: daily.map(d => ({ x: new Date(d.date), y: parseInt(d.requests) || 0 }))
+          }],
+          colors: ['#f97316'],
+          xaxis: { type: 'datetime' },
+          yaxis: { labels: { formatter: formatNumber } }
+        });
+
+        // Visitors chart
+        renderChart('chart-visitors', {
+          ...chartDefaults,
+          chart: { ...chartDefaults.chart, type: 'area', height: 280 },
+          series: [{
+            name: 'Visitors',
+            data: daily.map(d => ({ x: new Date(d.date), y: parseInt(d.visitors) || 0 }))
+          }],
+          colors: ['#8b5cf6'],
+          xaxis: { type: 'datetime' },
+          yaxis: { labels: { formatter: formatNumber } }
+        });
+
+        // HTTP Status chart - convert strings to numbers
+        const statusData = daily.reduce((acc, d) => {
+          acc.s2xx += parseInt(d.status_2xx) || 0;
+          acc.s3xx += parseInt(d.status_3xx) || 0;
+          acc.s4xx += parseInt(d.status_4xx) || 0;
+          acc.s5xx += parseInt(d.status_5xx) || 0;
+          return acc;
+        }, { s2xx: 0, s3xx: 0, s4xx: 0, s5xx: 0 });
+
+        const statusTotal = statusData.s2xx + statusData.s3xx + statusData.s4xx + statusData.s5xx;
+        
+        if (statusTotal > 0) {
+          renderChart('chart-status', {
+            chart: { type: 'donut', height: 250, background: 'transparent', fontFamily: 'Inter, sans-serif' },
+            series: [statusData.s2xx, statusData.s3xx, statusData.s4xx, statusData.s5xx],
+            labels: ['2xx Success', '3xx Redirect', '4xx Client Error', '5xx Server Error'],
+            colors: ['#22c55e', '#3b82f6', '#eab308', '#ef4444'],
+            legend: { position: 'bottom', labels: { colors: '#9ca3af' }, fontSize: '11px', fontWeight: 400 },
+            dataLabels: { enabled: true, style: { fontSize: '11px', fontWeight: 400 } },
+            tooltip: { theme: 'dark', y: { formatter: (val) => formatNumber(val) } },
+            plotOptions: { pie: { donut: { labels: { show: true, total: { show: true, label: 'Total', fontSize: '14px', fontWeight: 500, formatter: () => formatNumber(statusTotal) } } } } }
+          });
+        } else {
+          document.getElementById('chart-status').innerHTML = '<div class="flex items-center justify-center h-full text-gray-500">No data available</div>';
+        }
+
+        // Cache chart - use already parsed values
+        const uncachedBytes = bandwidth - cached;
+        
+        if (bandwidth > 0) {
+          renderChart('chart-cache', {
+            chart: { type: 'donut', height: 250, background: 'transparent', fontFamily: 'Inter, sans-serif' },
+            series: [cached, uncachedBytes],
+            labels: ['Cached', 'Uncached'],
+            colors: ['#22c55e', '#ef4444'],
+            legend: { position: 'bottom', labels: { colors: '#9ca3af' }, fontSize: '11px', fontWeight: 400 },
+            dataLabels: { enabled: true, style: { fontSize: '11px', fontWeight: 400 } },
+            tooltip: { theme: 'dark', y: { formatter: formatBytes } },
+            plotOptions: { pie: { donut: { labels: { show: true, total: { show: true, label: 'Total', fontSize: '14px', fontWeight: 500, formatter: () => formatBytes(bandwidth) } } } } }
+          });
+        } else {
+          document.getElementById('chart-cache').innerHTML = '<div class="flex items-center justify-center h-full text-gray-500">No data available</div>';
+        }
+
+        // Encryption chart
+        const encrypted = parseInt(totals.total_encrypted) || 0;
+        const unencrypted = requests - encrypted;
+        
+        if (requests > 0) {
+          renderChart('chart-encryption', {
+            chart: { type: 'donut', height: 250, background: 'transparent', fontFamily: 'Inter, sans-serif' },
+            series: [encrypted, unencrypted],
+            labels: ['HTTPS', 'HTTP'],
+            colors: ['#22c55e', '#ef4444'],
+            legend: { position: 'bottom', labels: { colors: '#9ca3af' }, fontSize: '11px', fontWeight: 400 },
+            dataLabels: { enabled: true, style: { fontSize: '11px', fontWeight: 400 } },
+            tooltip: { theme: 'dark', y: { formatter: (val) => formatNumber(val) } },
+            plotOptions: { pie: { donut: { labels: { show: true, total: { show: true, label: 'Total', fontSize: '14px', fontWeight: 500, formatter: () => formatNumber(requests) } } } } }
+          });
+        } else {
+          document.getElementById('chart-encryption').innerHTML = '<div class="flex items-center justify-center h-full text-gray-500">No data available</div>';
+        }
+
+        // Sites table
+        updateSitesTable(zones);
+
+      } catch (error) {
+        console.error('Error loading dashboard:', error);
+      }
+    }
+
+    function updateSitesTable(zones) {
+      const tbody = document.getElementById('sites-table-body');
+      tbody.innerHTML = zones.map(z => `
+        <tr class="border-b border-dark-700 hover:bg-dark-700/50 transition-colors">
+          <td class="py-3 px-4">
+            <div class="flex items-center">
+              <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-orange-500/20 to-purple-500/20 flex items-center justify-center mr-3 text-orange-400">
+                <i class="fas fa-globe"></i>
+              </div>
+              <div>
+                <div class="font-medium">${z.name}</div>
+                <div class="text-xs text-gray-500">${z.status}</div>
+              </div>
+            </div>
+          </td>
+          <td class="text-right py-3 px-4 font-medium">${formatNumber(parseInt(z.total_visitors) || 0)}</td>
+          <td class="text-right py-3 px-4">${formatNumber(parseInt(z.total_page_views) || 0)}</td>
+          <td class="text-right py-3 px-4">${formatNumber(parseInt(z.total_requests) || 0)}</td>
+          <td class="text-right py-3 px-4">${formatBytes(parseInt(z.total_bandwidth) || 0)}</td>
+          <td class="text-right py-3 px-4 ${(parseInt(z.total_threats) || 0) > 0 ? 'text-red-400' : 'text-gray-500'}">${formatNumber(parseInt(z.total_threats) || 0)}</td>
+          <td class="text-center py-3 px-4">
+            <button onclick="showPage('site-detail', '${z.zone_id}')" class="px-3 py-1 bg-orange-500/20 text-orange-400 rounded-lg hover:bg-orange-500/30 transition-colors text-sm">
+              Details <i class="fas fa-arrow-right ml-1"></i>
+            </button>
+          </td>
+        </tr>
+      `).join('');
+    }
+
+    // ============================================
+    // SITES PAGE
+    // ============================================
+    async function loadSitesPage() {
+      try {
+        const zones = await api.get('/zones');
+        const grid = document.getElementById('sites-grid');
+        
+        grid.innerHTML = zones.map(z => `
+          <div class="glass rounded-2xl p-6 border border-dark-700 card-glow cursor-pointer hover:border-orange-500/50 transition-all"
+               onclick="showPage('site-detail', '${z.zone_id}')">
+            <div class="flex items-center justify-between mb-4">
+              <div class="w-12 h-12 rounded-xl bg-gradient-to-br from-orange-500 to-purple-600 flex items-center justify-center text-white">
+                <i class="fas fa-globe text-2xl"></i>
+              </div>
+              <span class="px-2 py-1 rounded-full text-xs ${z.status === 'active' ? 'bg-green-500/20 text-green-400' : 'bg-gray-500/20 text-gray-400'}">
+                ${z.status}
+              </span>
+            </div>
+            <h3 class="text-lg font-semibold mb-3">${z.name}</h3>
+            <div class="grid grid-cols-2 gap-4 text-sm">
+              <div>
+                <div class="text-gray-400">Visitors</div>
+                <div class="font-semibold text-lg">${formatNumber(parseInt(z.total_visitors) || 0)}</div>
+              </div>
+              <div>
+                <div class="text-gray-400">Requests</div>
+                <div class="font-semibold text-lg">${formatNumber(parseInt(z.total_requests) || 0)}</div>
+              </div>
+              <div>
+                <div class="text-gray-400">Traffic</div>
+                <div class="font-semibold">${formatBytes(parseInt(z.total_bandwidth) || 0)}</div>
+              </div>
+              <div>
+                <div class="text-gray-400">Plan</div>
+                <div class="font-semibold">${z.plan_name || 'Free'}</div>
+              </div>
+            </div>
+          </div>
+        `).join('');
+      } catch (error) {
+        console.error('Error loading sites:', error);
+      }
+    }
+
+    // ============================================
+    // SITE DETAIL PAGE
+    // ============================================
+    async function loadSiteDetail(zoneId) {
+      if (!zoneId) return;
+      
+      try {
+        const data = await api.get(`/zone/${zoneId}?days=${currentPeriod}`);
+        const { zone, daily, countries, browsers, contentTypes } = data;
+        
+        document.getElementById('site-detail-name').textContent = zone.name;
+        
+        const totals = daily.reduce((acc, d) => {
+          acc.visitors += d.unique_visitors || 0;
+          acc.requests += d.requests || 0;
+          acc.bandwidth += d.bandwidth_bytes || 0;
+          acc.threats += d.threats || 0;
+          acc.pageViews += d.page_views || 0;
+          return acc;
+        }, { visitors: 0, requests: 0, bandwidth: 0, threats: 0, pageViews: 0 });
+
+        document.getElementById('site-detail-content').innerHTML = `
+          <!-- Stats -->
+          <div class="grid grid-cols-2 md:grid-cols-5 gap-4 mb-6">
+            <div class="glass rounded-xl p-4 border border-dark-700">
+              <div class="text-gray-400 text-sm">Visitors</div>
+              <div class="text-2xl font-bold">${formatNumber(totals.visitors)}</div>
+            </div>
+            <div class="glass rounded-xl p-4 border border-dark-700">
+              <div class="text-gray-400 text-sm">Page Views</div>
+              <div class="text-2xl font-bold">${formatNumber(totals.pageViews)}</div>
+            </div>
+            <div class="glass rounded-xl p-4 border border-dark-700">
+              <div class="text-gray-400 text-sm">Requests</div>
+              <div class="text-2xl font-bold">${formatNumber(totals.requests)}</div>
+            </div>
+            <div class="glass rounded-xl p-4 border border-dark-700">
+              <div class="text-gray-400 text-sm">Traffic</div>
+              <div class="text-2xl font-bold">${formatBytes(totals.bandwidth)}</div>
+            </div>
+            <div class="glass rounded-xl p-4 border border-dark-700">
+              <div class="text-gray-400 text-sm">Threats</div>
+              <div class="text-2xl font-bold text-red-400">${formatNumber(totals.threats)}</div>
+            </div>
+          </div>
+
+          <!-- Charts -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+            <div class="glass rounded-2xl p-6 border border-dark-700">
+              <h3 class="text-lg font-semibold mb-4"><i class="fas fa-chart-line mr-2"></i>Traffic</h3>
+              <div id="site-chart-traffic" class="h-64"></div>
+            </div>
+            <div class="glass rounded-2xl p-6 border border-dark-700">
+              <h3 class="text-lg font-semibold mb-4"><i class="fas fa-users mr-2"></i>Visitors</h3>
+              <div id="site-chart-visitors" class="h-64"></div>
+            </div>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6 mb-6">
+            <div class="glass rounded-2xl p-6 border border-dark-700">
+              <h3 class="text-lg font-semibold mb-4"><i class="fas fa-globe-americas mr-2"></i>Top Countries</h3>
+              <div id="site-chart-countries" class="h-64"></div>
+            </div>
+            <div class="glass rounded-2xl p-6 border border-dark-700">
+              <h3 class="text-lg font-semibold mb-4"><i class="fas fa-browser mr-2"></i>Browsers</h3>
+              <div id="site-chart-browsers" class="h-64"></div>
+            </div>
+            <div class="glass rounded-2xl p-6 border border-dark-700">
+              <h3 class="text-lg font-semibold mb-4"><i class="fas fa-file-alt mr-2"></i>Content Types</h3>
+              <div id="site-chart-content" class="h-64"></div>
+            </div>
+          </div>
+
+          <!-- Countries Table -->
+          <div class="glass rounded-2xl p-6 border border-dark-700">
+            <h3 class="text-lg font-semibold mb-4"><i class="fas fa-globe-americas mr-2"></i>Detailed Geography</h3>
+            <div class="overflow-x-auto max-h-64 scrollbar-thin">
+              <table class="w-full text-sm">
+                <thead class="sticky top-0 bg-dark-800">
+                  <tr class="text-gray-400 border-b border-dark-700">
+                    <th class="text-left py-2 px-3">#</th>
+                    <th class="text-left py-2 px-3">Country</th>
+                    <th class="text-right py-2 px-3">Requests</th>
+                    <th class="text-right py-2 px-3">Traffic</th>
+                    <th class="text-right py-2 px-3">Threats</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  ${countries.map((c, i) => `
+                    <tr class="border-b border-dark-700/50">
+                      <td class="py-2 px-3 text-gray-500">${i + 1}</td>
+                      <td class="py-2 px-3">${getCountryName(c.country_code)}</td>
+                      <td class="py-2 px-3 text-right font-medium">${formatNumber(c.requests)}</td>
+                      <td class="py-2 px-3 text-right">${formatBytes(c.bandwidth)}</td>
+                      <td class="py-2 px-3 text-right ${c.threats > 0 ? 'text-red-400' : 'text-gray-500'}">${c.threats}</td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        `;
+
+        // Render site charts
+        setTimeout(() => {
+          renderChart('site-chart-traffic', {
+            ...chartDefaults,
+            chart: { ...chartDefaults.chart, type: 'area', height: 250 },
+            series: [{ name: 'Запити', data: daily.map(d => ({ x: new Date(d.date), y: d.requests })) }],
+            colors: ['#f97316'],
+            xaxis: { type: 'datetime' },
+            yaxis: { labels: { formatter: formatNumber } }
+          });
+
+          renderChart('site-chart-visitors', {
+            ...chartDefaults,
+            chart: { ...chartDefaults.chart, type: 'area', height: 250 },
+            series: [{ name: 'Відвідувачі', data: daily.map(d => ({ x: new Date(d.date), y: d.unique_visitors })) }],
+            colors: ['#8b5cf6'],
+            xaxis: { type: 'datetime' },
+            yaxis: { labels: { formatter: formatNumber } }
+          });
+
+          renderChart('site-chart-countries', {
+            chart: { type: 'bar', height: 250, background: 'transparent', toolbar: { show: false } },
+            series: [{ name: 'Запити', data: countries.slice(0, 8).map(c => c.requests) }],
+            xaxis: { categories: countries.slice(0, 8).map(c => c.country_code), labels: { style: { colors: '#9ca3af' } } },
+            colors: ['#06b6d4'],
+            plotOptions: { bar: { borderRadius: 4 } },
+            tooltip: { theme: 'dark' },
+            grid: { borderColor: '#313244' },
+            yaxis: { labels: { formatter: formatNumber, style: { colors: '#9ca3af' } } }
+          });
+
+          renderChart('site-chart-browsers', {
+            chart: { type: 'donut', height: 250, background: 'transparent' },
+            series: browsers.slice(0, 6).map(b => b.views),
+            labels: browsers.slice(0, 6).map(b => b.name),
+            colors: ['#f97316', '#8b5cf6', '#06b6d4', '#22c55e', '#eab308', '#ef4444'],
+            legend: { position: 'bottom', labels: { colors: '#9ca3af' } },
+            tooltip: { theme: 'dark' }
+          });
+
+          renderChart('site-chart-content', {
+            chart: { type: 'donut', height: 250, background: 'transparent' },
+            series: contentTypes.slice(0, 6).map(c => c.requests),
+            labels: contentTypes.slice(0, 6).map(c => c.type),
+            colors: ['#3b82f6', '#8b5cf6', '#06b6d4', '#22c55e', '#eab308', '#ef4444'],
+            legend: { position: 'bottom', labels: { colors: '#9ca3af' } },
+            tooltip: { theme: 'dark' }
+          });
+        }, 100);
+
+      } catch (error) {
+        console.error('Error loading site detail:', error);
+      }
+    }
+
+    // ============================================
+    // SECURITY PAGE
+    // ============================================
+    async function loadSecurityPage() {
+      try {
+        const data = await api.get(`/analytics/security?days=${currentPeriod}`);
+        const { byZone, byCountry, trend } = data;
+
+        renderChart('chart-threats-by-site', {
+          chart: { type: 'bar', height: 280, background: 'transparent', toolbar: { show: false } },
+          series: [{ name: 'Загрози', data: byZone.filter(z => z.threats > 0).map(z => z.threats) }],
+          xaxis: { 
+            categories: byZone.filter(z => z.threats > 0).map(z => z.name.replace('.com', '')), 
+            labels: { style: { colors: '#9ca3af' } } 
+          },
+          colors: ['#ef4444'],
+          plotOptions: { bar: { borderRadius: 4, horizontal: true } },
+          tooltip: { theme: 'dark' },
+          grid: { borderColor: '#313244' },
+          yaxis: { labels: { style: { colors: '#9ca3af' } } }
+        });
+
+        renderChart('chart-threats-by-country', {
+          chart: { type: 'bar', height: 280, background: 'transparent', toolbar: { show: false } },
+          series: [{ name: 'Загрози', data: byCountry.slice(0, 10).map(c => c.threats) }],
+          xaxis: { categories: byCountry.slice(0, 10).map(c => c.country_code), labels: { style: { colors: '#9ca3af' } } },
+          colors: ['#f97316'],
+          plotOptions: { bar: { borderRadius: 4 } },
+          tooltip: { theme: 'dark' },
+          grid: { borderColor: '#313244' },
+          yaxis: { labels: { style: { colors: '#9ca3af' } } }
+        });
+
+        renderChart('chart-threats-trend', {
+          ...chartDefaults,
+          chart: { ...chartDefaults.chart, type: 'area', height: 250 },
+          series: [{ name: 'Загрози', data: trend.map(d => ({ x: new Date(d.date), y: d.threats })) }],
+          colors: ['#ef4444'],
+          xaxis: { type: 'datetime' },
+          yaxis: { labels: { formatter: formatNumber } }
+        });
+
+      } catch (error) {
+        console.error('Error loading security:', error);
+      }
+    }
+
+    // ============================================
+    // TRENDS PAGE
+    // ============================================
+    let allZones = [];
+    let trendsData = [];
+    let trendsCurrentPage = 1;
+    const trendsPerPage = 20;
+    
+    // Load preferences from localStorage
+    function loadTrendsPreferences() {
+      const prefs = localStorage.getItem('trendsPreferences');
+      if (prefs) {
+        return JSON.parse(prefs);
+      }
+      return {
+        metric: 'unique_visitors',
+        days: 7,
+        sort: 'name_asc',
+        selectedSites: [],
+        page: 1
+      };
+    }
+    
+    // Save preferences to localStorage
+    function saveTrendsPreferences() {
+      const prefs = {
+        metric: document.getElementById('trends-metric').value,
+        days: document.getElementById('trends-days').value,
+        sort: document.getElementById('trends-sort').value,
+        selectedSites: getSelectedSites(),
+        page: trendsCurrentPage
+      };
+      localStorage.setItem('trendsPreferences', JSON.stringify(prefs));
+    }
+    
+    async function loadTrendsPage() {
+      try {
+        // Load zones if not loaded
+        if (allZones.length === 0) {
+          allZones = await api.get('/zones');
+        }
+        
+        // Restore preferences
+        const prefs = loadTrendsPreferences();
+        document.getElementById('trends-metric').value = prefs.metric;
+        document.getElementById('trends-days').value = prefs.days || 7;
+        document.getElementById('trends-sort').value = prefs.sort;
+        trendsCurrentPage = prefs.page;
+        
+        // Populate site checkboxes
+        populateSiteCheckboxes(prefs.selectedSites);
+        
+        // Load and render trends
+        await loadTrendsData();
+        
+        // Add event listeners
+        document.getElementById('trends-metric').addEventListener('change', () => {
+          saveTrendsPreferences();
+          renderTrendsCharts();
+        });
+        
+        document.getElementById('trends-days').addEventListener('change', () => {
+          saveTrendsPreferences();
+          loadTrendsData();
+        });
+        
+        document.getElementById('trends-sort').addEventListener('change', () => {
+          saveTrendsPreferences();
+          renderTrendsCharts();
+        });
+        
+      } catch (error) {
+        console.error('Error loading trends page:', error);
+      }
+    }
+    
+    function populateSiteCheckboxes(selectedSites) {
+      const container = document.getElementById('site-checkboxes');
+      container.innerHTML = '';
+      
+      // If no selected sites in preferences, select all
+      const sitesToSelect = selectedSites.length > 0 ? selectedSites : allZones.map(z => z.zone_id);
+      
+      allZones.forEach(zone => {
+        const isChecked = sitesToSelect.includes(zone.zone_id);
+        const div = document.createElement('div');
+        div.className = 'flex items-center space-x-2';
+        div.innerHTML = `
+          <input type="checkbox" 
+                 id="site-${zone.zone_id}" 
+                 value="${zone.zone_id}" 
+                 ${isChecked ? 'checked' : ''}
+                 onchange="onSiteCheckboxChange()"
+                 class="w-4 h-4 text-orange-500 bg-dark-700 border-dark-600 rounded focus:ring-orange-500">
+          <label for="site-${zone.zone_id}" class="text-sm text-gray-300 cursor-pointer truncate" title="${zone.name}">
+            ${zone.name}
+          </label>
+        `;
+        container.appendChild(div);
+      });
+    }
+    
+    function selectAllSites() {
+      document.querySelectorAll('#site-checkboxes input[type="checkbox"]').forEach(cb => {
+        cb.checked = true;
+      });
+      onSiteCheckboxChange();
+    }
+    
+    function deselectAllSites() {
+      document.querySelectorAll('#site-checkboxes input[type="checkbox"]').forEach(cb => {
+        cb.checked = false;
+      });
+      onSiteCheckboxChange();
+    }
+    
+    function getSelectedSites() {
+      const checkboxes = document.querySelectorAll('#site-checkboxes input[type="checkbox"]:checked');
+      return Array.from(checkboxes).map(cb => cb.value);
+    }
+    
+    function onSiteCheckboxChange() {
+      saveTrendsPreferences();
+      trendsCurrentPage = 1; // Reset to first page
+      loadTrendsData(); // Reload data when checkboxes change
+    }
+    
+    async function loadTrendsData() {
+      const selectedSites = getSelectedSites();
+      console.log('loadTrendsData called, selectedSites:', selectedSites);
+      
+      if (selectedSites.length === 0) {
+        console.log('No sites selected');
+        trendsData = [];
+        renderTrendsCharts();
+        return;
+      }
+      
+      let days = document.getElementById('trends-days').value;
+      console.log('Fetching data for days:', days);
+      
+      // Limit all-time to 365 days for performance
+      if (days > 365) {
+        days = 365;
+      }
+      const zones = selectedSites.join(',');
+      console.log('Fetching from API with zones:', zones);
+      
+      trendsData = await api.get(`/trends/daily?days=${days}&zones=${zones}`);
+      console.log('Received trendsData rows:', trendsData.length);
+      renderTrendsCharts();
+    }
+    
+    function renderTrendsCharts() {
+      const selectedSites = getSelectedSites();
+      const metric = document.getElementById('trends-metric').value;
+      const sort = document.getElementById('trends-sort').value;
+      
+      console.log('Rendering trends, metric:', metric, 'data rows:', trendsData.length);
+      
+      // Group data by zone
+      const zoneData = {};
+      trendsData.forEach(row => {
+        if (!zoneData[row.zone_id]) {
+          zoneData[row.zone_id] = {
+            zone_id: row.zone_id,
+            zone_name: row.zone_name,
+            zone_db_id: row.zone_db_id,
+            zone_created_at: row.zone_created_at,
+            days: []
+          };
+        }
+        const value = parseInt(row[metric]) || 0;
+        zoneData[row.zone_id].days.push({
+          date: row.date,
+          value: value
+        });
+      });
+      
+      console.log('Zone data created:', Object.keys(zoneData).length, 'zones');
+      
+      // Ensure every selected site has an entry even if no data returned
+      selectedSites.forEach(zoneId => {
+        if (!zoneData[zoneId]) {
+          const meta = allZones.find(z => z.zone_id === zoneId) || {};
+          zoneData[zoneId] = {
+            zone_id: zoneId,
+            zone_name: meta.name || zoneId,
+            zone_db_id: meta.id || 0,
+            zone_created_at: meta.created_on || '',
+            days: []
+          };
+        }
+      });
+      
+      // Filter and sort zones
+      let zones = Object.values(zoneData).filter(z => selectedSites.includes(z.zone_id));
+      console.log('After filter, zones count:', zones.length, 'selectedSites:', selectedSites);
+      
+      // Sort days by date for each zone (no zero filling - show only actual data)
+      zones = zones.map(zone => {
+        if (zone.days.length === 0) {
+          return zone;
+        }
+        zone.days.sort((a, b) => new Date(a.date) - new Date(b.date));
+        return zone;
+      });
+      
+      // Sort zones
+      zones.sort((a, b) => {
+        switch(sort) {
+          case 'name_asc': return a.zone_name.localeCompare(b.zone_name);
+          case 'name_desc': return b.zone_name.localeCompare(a.zone_name);
+          case 'id_asc': return a.zone_db_id - b.zone_db_id; // Sort by database ID (oldest first)
+          case 'id_desc': return b.zone_db_id - a.zone_db_id; // Sort by database ID (newest first)
+          default: return 0;
+        }
+      });
+      
+      // Pagination
+      const totalPages = Math.ceil(zones.length / trendsPerPage);
+      const startIdx = (trendsCurrentPage - 1) * trendsPerPage;
+      const endIdx = startIdx + trendsPerPage;
+      const zonesOnPage = zones.slice(startIdx, endIdx);
+      console.log('Pagination: page', trendsCurrentPage, 'of', totalPages, ', showing', zonesOnPage.length, 'zones');
+      
+      // Render charts
+      const container = document.getElementById('trends-charts-container');
+      container.innerHTML = '';
+      
+      if (zonesOnPage.length === 0) {
+        container.innerHTML = '<div class="col-span-full text-center text-gray-400 py-12">No sites selected</div>';
+        document.getElementById('trends-pagination').innerHTML = '';
+        return;
+      }
+      
+      zonesOnPage.forEach((zone, index) => {
+        const chartId = `trend-chart-${index}`;
+        const chartDiv = document.createElement('div');
+        chartDiv.className = 'glass rounded-2xl p-5 border border-dark-700';
+        chartDiv.innerHTML = `
+          <h3 class="text-sm font-semibold mb-3 truncate" title="${zone.zone_name}">
+            <i class="fas fa-globe text-blue-400 mr-2"></i>${zone.zone_name}
+          </h3>
+          <div id="${chartId}" class="h-48"></div>
+        `;
+        container.appendChild(chartDiv);
+        
+        // Render chart
+        const metricLabel = document.getElementById('trends-metric').selectedOptions[0].text;
+        const tickAmount = zone.days.length > 30 ? 6 : zone.days.length > 14 ? 8 : 10;
+        
+        console.log('Rendering chart for:', zone.zone_name, 'days:', zone.days.length, 'chartId:', chartId);
+        
+        renderChart(chartId, {
+          chart: {
+            type: 'area',
+            height: 192,
+            background: 'transparent',
+            toolbar: { show: false },
+            fontFamily: 'Inter, sans-serif',
+            sparkline: { enabled: false }
+          },
+          series: [{
+            name: metricLabel,
+            data: zone.days.map(d => ({
+              x: new Date(d.date).getTime(),
+              y: d.value
+            }))
+          }],
+          stroke: { curve: 'smooth', width: 2 },
+          colors: ['#f97316'],
+          markers: {
+            size: 0
+          },
+          dataLabels: {
+            enabled: false
+          },
+          fill: {
+            type: 'gradient',
+            gradient: {
+              shadeIntensity: 1,
+              opacityFrom: 0.4,
+              opacityTo: 0.1,
+              stops: [0, 100]
+            }
+          },
+          xaxis: {
+            type: 'datetime',
+            labels: {
+              show: false
+            },
+            tickAmount: tickAmount
+          },
+          yaxis: {
+            labels: {
+              style: { colors: '#9ca3af', fontSize: '10px', fontWeight: 400 },
+              formatter: (val) => {
+                const rounded = Math.round(val);
+                if (rounded === 0) return '0';
+                return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+              }
+            }
+          },
+          tooltip: {
+            theme: 'dark',
+            x: { format: 'MMM dd, yyyy' },
+            y: { formatter: (val) => formatNumber(Math.round(val)) }
+          },
+          grid: {
+            borderColor: '#374151',
+            strokeDashArray: 4
+          }
+        });
+      });
+      
+      // Render pagination
+      renderTrendsPagination(totalPages);
+    }
+    
+    function renderTrendsPagination(totalPages) {
+      const container = document.getElementById('trends-pagination');
+      
+      if (totalPages <= 1) {
+        container.innerHTML = '';
+        return;
+      }
+      
+      let html = '';
+      
+      // Previous button
+      html += `
+        <button onclick="goToTrendsPage(${trendsCurrentPage - 1})" 
+                ${trendsCurrentPage === 1 ? 'disabled' : ''}
+                class="px-3 py-2 rounded-lg text-sm ${trendsCurrentPage === 1 ? 'bg-dark-700 text-gray-600 cursor-not-allowed' : 'bg-dark-700 text-white hover:bg-dark-600'}">
+          <i class="fas fa-chevron-left"></i>
+        </button>
+      `;
+      
+      // Page numbers
+      const maxButtons = 7;
+      let startPage = Math.max(1, trendsCurrentPage - Math.floor(maxButtons / 2));
+      let endPage = Math.min(totalPages, startPage + maxButtons - 1);
+      
+      if (endPage - startPage < maxButtons - 1) {
+        startPage = Math.max(1, endPage - maxButtons + 1);
+      }
+      
+      if (startPage > 1) {
+        html += `<button onclick="goToTrendsPage(1)" class="px-3 py-2 rounded-lg text-sm bg-dark-700 text-white hover:bg-dark-600">1</button>`;
+        if (startPage > 2) {
+          html += `<span class="px-2 text-gray-500">...</span>`;
+        }
+      }
+      
+      for (let i = startPage; i <= endPage; i++) {
+        html += `
+          <button onclick="goToTrendsPage(${i})" 
+                  class="px-3 py-2 rounded-lg text-sm ${i === trendsCurrentPage ? 'bg-orange-500 text-white' : 'bg-dark-700 text-white hover:bg-dark-600'}">
+            ${i}
+          </button>
+        `;
+      }
+      
+      if (endPage < totalPages) {
+        if (endPage < totalPages - 1) {
+          html += `<span class="px-2 text-gray-500">...</span>`;
+        }
+        html += `<button onclick="goToTrendsPage(${totalPages})" class="px-3 py-2 rounded-lg text-sm bg-dark-700 text-white hover:bg-dark-600">${totalPages}</button>`;
+      }
+      
+      // Next button
+      html += `
+        <button onclick="goToTrendsPage(${trendsCurrentPage + 1})" 
+                ${trendsCurrentPage === totalPages ? 'disabled' : ''}
+                class="px-3 py-2 rounded-lg text-sm ${trendsCurrentPage === totalPages ? 'bg-dark-700 text-gray-600 cursor-not-allowed' : 'bg-dark-700 text-white hover:bg-dark-600'}">
+          <i class="fas fa-chevron-right"></i>
+        </button>
+      `;
+      
+      container.innerHTML = html;
+    }
+    
+    function goToTrendsPage(page) {
+      const selectedSites = getSelectedSites();
+      const totalPages = Math.ceil(selectedSites.length / trendsPerPage);
+      
+      if (page < 1 || page > totalPages) return;
+      
+      trendsCurrentPage = page;
+      saveTrendsPreferences();
+      renderTrendsCharts();
+      
+      // Scroll to top of charts
+      document.getElementById('trends-charts-container').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+
+    // ============================================
+    // GEO PAGE
+    // ============================================
+    async function loadGeoPage() {
+      try {
+        const countries = await api.get(`/analytics/countries?days=${currentPeriod}`);
+        const totalRequests = countries.reduce((sum, c) => sum + parseInt(c.requests) || 0, 0);
+
+        renderChart('chart-countries', {
+          chart: { type: 'bar', height: 380, background: 'transparent', toolbar: { show: false }, fontFamily: 'Inter, sans-serif' },
+          series: [{ name: 'Requests', data: countries.slice(0, 20).map(c => parseInt(c.requests) || 0) }],
+          xaxis: { categories: countries.slice(0, 20).map(c => c.country_code), labels: { style: { colors: '#9ca3af', fontSize: '11px', fontWeight: 400 } } },
+          colors: ['#06b6d4'],
+          plotOptions: { bar: { borderRadius: 4 } },
+          tooltip: { theme: 'dark', y: { formatter: formatNumber } },
+          grid: { borderColor: '#313244' },
+          yaxis: { labels: { formatter: formatNumber, style: { colors: '#9ca3af', fontSize: '11px', fontWeight: 400 } } }
+        });
+
+        const topCountries = countries.slice(0, 10).filter(c => parseInt(c.requests) > 0);
+        if (topCountries.length > 0) {
+          renderChart('chart-countries-pie', {
+            chart: { type: 'donut', height: 380, background: 'transparent', fontFamily: 'Inter, sans-serif' },
+            series: topCountries.map(c => parseInt(c.requests) || 0),
+            labels: topCountries.map(c => getCountryName(c.country_code)),
+            colors: ['#f97316', '#8b5cf6', '#06b6d4', '#22c55e', '#eab308', '#ef4444', '#3b82f6', '#ec4899', '#14b8a6', '#a855f7'],
+            legend: { position: 'right', labels: { colors: '#9ca3af' }, fontSize: '11px', fontWeight: 400 },
+            dataLabels: { enabled: true, style: { fontSize: '11px', fontWeight: 400 } },
+            tooltip: { theme: 'dark', y: { formatter: formatNumber } },
+            plotOptions: { pie: { donut: { labels: { show: true, total: { show: true, label: 'Total', fontSize: '14px', fontWeight: 500, formatter: () => formatNumber(totalRequests) } } } } }
+          });
+        } else {
+          document.getElementById('chart-countries-pie').innerHTML = '<div class="flex items-center justify-center h-full text-gray-500">No data available</div>';
+        }
+
+        const tbody = document.getElementById('countries-table-body');
+        tbody.innerHTML = countries.map((c, i) => {
+          const requests = parseInt(c.requests) || 0;
+          const bandwidth = parseInt(c.bandwidth) || 0;
+          const threats = parseInt(c.threats) || 0;
+          const percent = totalRequests > 0 ? ((requests / totalRequests) * 100).toFixed(1) : 0;
+          
+          return `
+          <tr class="border-b border-dark-700/50 hover:bg-dark-700/30">
+            <td class="py-2 px-4 text-gray-500">${i + 1}</td>
+            <td class="py-2 px-4">${getCountryName(c.country_code)}</td>
+            <td class="py-2 px-4 text-right font-medium">${formatNumber(requests)}</td>
+            <td class="py-2 px-4 text-right">${formatBytes(bandwidth)}</td>
+            <td class="py-2 px-4 text-right ${threats > 0 ? 'text-red-400' : 'text-gray-500'}">${threats}</td>
+            <td class="py-2 px-4 text-right">
+              <div class="flex items-center justify-end">
+                <div class="w-16 bg-dark-700 rounded-full h-2 mr-2">
+                  <div class="bg-orange-500 h-2 rounded-full" style="width: ${percent}%"></div>
+                </div>
+                <span class="text-sm">${percent}%</span>
+              </div>
+            </td>
+          </tr>
+        `}).join('');
+
+      } catch (error) {
+        console.error('Error loading geo:', error);
+      }
+    }
+
+    // ============================================
+    // CHART HELPER
+    // ============================================
+    function renderChart(elementId, options) {
+      if (chartsInstances[elementId]) {
+        chartsInstances[elementId].destroy();
+      }
+      const el = document.getElementById(elementId);
+      if (el) {
+        chartsInstances[elementId] = new ApexCharts(el, options);
+        chartsInstances[elementId].render();
+      }
+    }
+
+    // ============================================
+    // INIT
+    // ============================================
+    document.addEventListener('DOMContentLoaded', () => {
+      showPage('dashboard');
+      
+      // Auto-refresh every 5 minutes
+      setInterval(refreshData, 5 * 60 * 1000);
+    });
+  </script>
+</body>
+</html>

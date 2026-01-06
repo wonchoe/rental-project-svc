@@ -3,4 +3,7 @@
 /google-photo-api/.env
 /image-gen-api/node_modules
 /image-gen-api/.env
+/analytics/node_modules
+/analytics/.env
+/analytics/dashboard/node_modules
 /.env

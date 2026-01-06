@@ -1,0 +1,22 @@
+{
+  "name": "cloudflare-analytics",
+  "version": "1.0.0",
+  "description": "Скрипт для отримання аналітики Cloudflare та збереження в MySQL",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "analytics": "node index.js",
+    "sync": "node index.js",
+    "daily": "node daily-scheduler.js",
+    "daily:once": "node daily-scheduler.js --once",
+    "daily:backfill": "node daily-scheduler.js --backfill=30",
+    "scheduler": "node scheduler.js",
+    "scheduler:5min": "node scheduler.js --interval=5",
+    "scheduler:10min": "node scheduler.js --interval=10",
+    "once": "node scheduler.js --once"
+  },
+  "dependencies": {
+    "dotenv": "^16.3.1",
+    "mysql2": "^3.16.0"
+  }
+}

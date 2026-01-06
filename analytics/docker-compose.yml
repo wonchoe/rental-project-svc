@@ -1,0 +1,71 @@
+services:
+  # Analytics Dashboard - веб-інтерфейс
+  dashboard:
+    build: ./dashboard
+    container_name: cf-analytics-dashboard
+    restart: unless-stopped
+    ports:
+      - "3030:3030"
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=host.docker.internal
+      - DASHBOARD_PORT=3030
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3030/api/zones"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Daily Scheduler - збір денної статистики (раз на годину)
+  daily-scheduler:
+    build: .
+    container_name: cf-daily-analytics
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["node", "daily-scheduler.js"]
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD", "node", "-e", "console.log('OK')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Hourly Scheduler - погодинна статистика (кожні 5 хвилин) - опціонально
+  hourly-scheduler:
+    build: .
+    container_name: cf-hourly-analytics
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      - NODE_ENV=production
+      - DB_HOST=host.docker.internal
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    command: ["node", "scheduler.js", "--interval=5"]
+    profiles:
+      - hourly  # Запускається тільки з --profile hourly
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
