@@ -16,9 +16,15 @@ COPY *.js ./
 # Копіюємо dashboard папку
 COPY dashboard ./dashboard
 
-# Встановлюємо залежності для dashboard
+# Встановлюємо залежності для dashboard (включно з dev dependencies для Tailwind)
 WORKDIR /app/dashboard
-RUN npm ci --only=production
+RUN npm install
+
+# Buildуємо Tailwind CSS
+RUN npm run build:css
+
+# На production встановлюємо тільки production dependencies
+RUN npm prune --production
 
 # Повертаємось до root
 WORKDIR /app
