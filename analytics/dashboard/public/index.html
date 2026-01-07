@@ -4,7 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cloudflare Analytics Dashboard</title>
-  <link rel="stylesheet" href="/styles.css">
+  <script src="https://cdn.tailwindcss.com"></script>
   <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -1159,6 +1159,115 @@
         return;
       }
       
+      // ============================================
+      // TOTAL CHART - Sum of all selected sites
+      // ============================================
+      if (selectedSites.length > 1 && trendsCurrentPage === 1) {
+        // Aggregate data by date across all selected zones
+        const totalByDate = {};
+        zones.forEach(zone => {
+          zone.days.forEach(day => {
+            const dateKey = day.date;
+            if (!totalByDate[dateKey]) {
+              totalByDate[dateKey] = 0;
+            }
+            totalByDate[dateKey] += day.value;
+          });
+        });
+        
+        // Convert to array and sort by date
+        const totalDays = Object.entries(totalByDate)
+          .map(([date, value]) => ({ date, value }))
+          .sort((a, b) => new Date(a.date) - new Date(b.date));
+        
+        if (totalDays.length > 0) {
+          const totalChartId = 'trend-chart-total';
+          const totalChartDiv = document.createElement('div');
+          totalChartDiv.className = 'glass rounded-2xl p-5 border-2 border-purple-500/50 bg-gradient-to-br from-purple-900/20 to-orange-900/20';
+          totalChartDiv.innerHTML = `
+            <h3 class="text-lg font-bold mb-3 bg-gradient-to-r from-purple-400 to-orange-400 bg-clip-text text-transparent">
+              <i class="fas fa-chart-line mr-2"></i>📊 TOTAL (${selectedSites.length} sites)
+            </h3>
+            <div id="${totalChartId}" class="h-64"></div>
+          `;
+          container.appendChild(totalChartDiv);
+          
+          const metricLabel = document.getElementById('trends-metric').selectedOptions[0].text;
+          const tickAmount = totalDays.length > 30 ? 8 : totalDays.length > 14 ? 10 : 12;
+          
+          renderChart(totalChartId, {
+            chart: {
+              type: 'area',
+              height: 256,
+              background: 'transparent',
+              toolbar: { show: false },
+              fontFamily: 'Inter, sans-serif',
+              sparkline: { enabled: false }
+            },
+            series: [{
+              name: `Total ${metricLabel}`,
+              data: totalDays.map(d => ({
+                x: new Date(d.date).getTime(),
+                y: d.value
+              }))
+            }],
+            stroke: { curve: 'smooth', width: 3 },
+            colors: ['#a855f7'],
+            markers: {
+              size: 0
+            },
+            dataLabels: {
+              enabled: false
+            },
+            fill: {
+              type: 'gradient',
+              gradient: {
+                shadeIntensity: 1,
+                colorStops: [
+                  { offset: 0, color: '#a855f7', opacity: 0.5 },
+                  { offset: 50, color: '#f97316', opacity: 0.3 },
+                  { offset: 100, color: '#06b6d4', opacity: 0.1 }
+                ]
+              }
+            },
+            xaxis: {
+              type: 'datetime',
+              labels: {
+                style: { colors: '#9ca3af', fontSize: '11px', fontWeight: 400 },
+                datetimeFormatter: {
+                  day: 'dd MMM'
+                }
+              },
+              tickAmount: tickAmount
+            },
+            yaxis: {
+              labels: {
+                style: { colors: '#9ca3af', fontSize: '11px', fontWeight: 400 },
+                formatter: (val) => {
+                  const rounded = Math.round(val);
+                  if (rounded === 0) return '0';
+                  if (rounded >= 1e6) return (rounded / 1e6).toFixed(1) + 'M';
+                  if (rounded >= 1e3) return (rounded / 1e3).toFixed(1) + 'K';
+                  return rounded.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ' ');
+                }
+              }
+            },
+            tooltip: {
+              theme: 'dark',
+              x: { format: 'MMM dd, yyyy' },
+              y: { formatter: (val) => formatNumber(Math.round(val)) }
+            },
+            grid: {
+              borderColor: '#6b21a8',
+              strokeDashArray: 4
+            }
+          });
+        }
+      }
+      
+      // ============================================
+      // Individual site charts
+      // ============================================
       zonesOnPage.forEach((zone, index) => {
         const chartId = `trend-chart-${index}`;
         const chartDiv = document.createElement('div');

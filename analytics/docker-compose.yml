@@ -25,7 +25,7 @@ services:
       timeout: 10s
       retries: 3
 
-  # Daily Scheduler - збір денної статистики (раз на годину)
+  # Daily Scheduler - збір денної статистики (раз на годину через cron)
   daily-scheduler:
     build: .
     container_name: cf-daily-analytics
@@ -37,7 +37,6 @@ services:
       - DB_HOST=host.docker.internal
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    command: ["node", "daily-scheduler.js"]
     logging:
       driver: "json-file"
       options:
