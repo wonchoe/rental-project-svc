@@ -18,6 +18,7 @@ const mysql = require('mysql2/promise');
 // ==================== КОНФІГУРАЦІЯ ====================
 
 const CLOUDFLARE_API_KEY = process.env.CLOUDFLARE_API_KEY;
+const CLOUDFLARE_API_KEY_2 = process.env.CLOUDFLARE_API_KEY_2;
 const ACCOUNT_ID = process.env.ACCOUNT_ID;
 const ACCOUNT_ID_2 = process.env.ACCOUNT_ID_2;
 
@@ -51,9 +52,9 @@ function log(message, type = 'info') {
   console.log(`[${timestamp}] ${prefix} ${message}`);
 }
 
-function getHeaders() {
+function getHeaders(apiKey = CLOUDFLARE_API_KEY) {
   return {
-    'Authorization': `Bearer ${CLOUDFLARE_API_KEY}`,
+    'Authorization': `Bearer ${apiKey}`,
     'Content-Type': 'application/json'
   };
 }
@@ -79,10 +80,10 @@ function getDateUTC(daysOffset = 0) {
 
 // ==================== CLOUDFLARE API ====================
 
-async function getZonesForAccount(accountId) {
+async function getZonesForAccount(accountId, apiKey) {
   try {
     const response = await fetch(`${API_BASE}/zones?account.id=${accountId}&per_page=50`, {
-      headers: getHeaders()
+      headers: getHeaders(apiKey)
     });
     const data = await response.json();
     
@@ -99,15 +100,39 @@ async function getZonesForAccount(accountId) {
 }
 
 async function getAllZones() {
+  // Отримуємо зони з бази даних (обидва аккаунти)
+  try {
+    const pool = await getPool();
+    const [zones] = await pool.execute(
+      'SELECT zone_id, name, status FROM cf_zones WHERE status = ? ORDER BY name',
+      ['active']
+    );
+    
+    log(`Знайдено ${zones.length} активних зон в БД`, 'info');
+    
+    return zones.map(zone => ({
+      id: zone.zone_id,  // Реальний Cloudflare zone ID
+      name: zone.name,
+      status: zone.status
+    }));
+  } catch (error) {
+    log(`Помилка отримання зон з БД: ${error.message}`, 'error');
+    return [];
+  }
+}
+
+async function getAllZonesFromAPI() {
+  // Отримуємо зони з обох акаунтів використовуючи відповідні токени
   const accounts = [
-    { id: ACCOUNT_ID, name: 'Account 1' },
-    { id: ACCOUNT_ID_2, name: 'Account 2' }
-  ].filter(acc => acc.id);
+    { id: ACCOUNT_ID, apiKey: CLOUDFLARE_API_KEY, name: 'Account 1' },
+    { id: ACCOUNT_ID_2, apiKey: CLOUDFLARE_API_KEY_2, name: 'Account 2' }
+  ].filter(acc => acc.id && acc.apiKey);
 
   let allZones = [];
   
   for (const account of accounts) {
-    const zones = await getZonesForAccount(account.id);
+    const zones = await getZonesForAccount(account.id, account.apiKey);
+    log(`${account.name} (${account.id.substring(0, 8)}...): ${zones.length} зон`, 'info');
     zones.forEach(zone => zone._accountId = account.id);
     allZones = allZones.concat(zones);
   }
@@ -239,6 +264,57 @@ async function getPool() {
     pool = mysql.createPool(DB_CONFIG);
   }
   return pool;
+}
+
+// Синхронізація зон з Cloudflare API в базу даних
+async function syncZonesWithDatabase() {
+  try {
+    const pool = await getPool();
+    const connection = await pool.getConnection();
+    
+    try {
+      // Отримуємо зони з API
+      const apiZones = await getAllZonesFromAPI();
+      
+      if (apiZones.length === 0) {
+        log('Не вдалося отримати зони з Cloudflare API', 'warn');
+        return;
+      }
+      
+      log(`Отримано ${apiZones.length} зон з Cloudflare API`, 'info');
+      
+      // Отримуємо існуючі зони з БД
+      const [existingZones] = await connection.execute(
+        'SELECT zone_id FROM cf_zones'
+      );
+      const existingZoneIds = new Set(existingZones.map(z => z.zone_id));
+      
+      // Додаємо нові зони
+      let addedCount = 0;
+      for (const zone of apiZones) {
+        if (!existingZoneIds.has(zone.id)) {
+          await connection.execute(
+            `INSERT INTO cf_zones (zone_id, name, status, account_id, created_at, updated_at) 
+             VALUES (?, ?, ?, ?, NOW(), NOW())`,
+            [zone.id, zone.name, zone.status, zone._accountId || '']
+          );
+          log(`➕ Додано нову зону: ${zone.name}`, 'success');
+          addedCount++;
+        }
+      }
+      
+      if (addedCount > 0) {
+        log(`Додано ${addedCount} нових зон`, 'success');
+      } else {
+        log('Нових зон не знайдено', 'info');
+      }
+      
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    log(`Помилка синхронізації зон: ${error.message}`, 'error');
+  }
 }
 
 async function saveDailyAnalytics(connection, zoneId, zoneName, stats) {
@@ -422,6 +498,10 @@ async function startScheduler() {
   }
   console.log('');
 
+  // Синхронізація зон з Cloudflare API
+  log('Синхронізація зон з Cloudflare API...', 'start');
+  await syncZonesWithDatabase();
+
   // Backfill якщо потрібно
   if (backfill > 0) {
     log(`Заповнення даних за останні ${backfill} днів...`, 'start');
@@ -453,10 +533,12 @@ async function startScheduler() {
   
   // Перший запуск о наступній повній годині
   setTimeout(async () => {
+    await syncZonesWithDatabase();
     await collectDailyAnalytics(2);
     
     // Потім кожну годину
     setInterval(async () => {
+      await syncZonesWithDatabase();
       await collectDailyAnalytics(2);
       
       const next = new Date();
