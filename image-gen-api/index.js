@@ -224,6 +224,149 @@ async function generateQwenImage(prompt, size, index) {
 }
 
 
+// ================== IDEOGRAM IMAGE GENERATION ==================
+app.post("/generate-ideogram", authMiddleware, async (req, res) => {
+  try {
+    const { prompt, n = 1, size = 2 } = req.body;
+
+    // Enhanced prompt for logo generation with Ideogram Transparent API
+    const enhancedPrompt = `${prompt}. Professional horizontal logo design in wide format. Clean, modern, minimalist style. Vector-style graphics suitable for branding.`;
+
+    console.log(`🎨 [Ideogram Transparent] Generating image with prompt: "${enhancedPrompt}"`);
+
+    const timestamp = Date.now();
+    const images = [];
+
+    // Ideogram supports batch generation (num_images: 1-8)
+    const envNumImages = parseInt(process.env.IDEOGRAM_NUM_IMAGES) || 1;
+    const numImages = Math.min(Math.max(envNumImages, 1), 8);
+
+    const apiKey = process.env.IDEOGRAM_API_KEY;
+    if (!apiKey) {
+      throw new Error("IDEOGRAM_API_KEY not configured");
+    }
+
+    // Build FormData for multipart/form-data request
+    const formData = new FormData();
+    formData.append('prompt', enhancedPrompt);
+    formData.append('aspect_ratio', '3x1');  // Wide logo format (3:1 aspect ratio)
+    formData.append('num_images', numImages.toString());
+    formData.append('rendering_speed', 'TURBO');
+    formData.append('magic_prompt', 'AUTO');  // AUTO gives more variation
+
+    const response = await fetch("https://api.ideogram.ai/v1/ideogram-v3/generate", {
+      method: "POST",
+      headers: {
+        "Api-Key": apiKey
+      },
+      body: formData
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      console.error(`❌ Ideogram API error:`, data);
+      throw new Error(data.error?.message || `Ideogram API error: ${response.status}`);
+    }
+
+    if (!data.data || data.data.length === 0) {
+      throw new Error("No images returned from Ideogram API");
+    }
+
+    // Process each generated image
+    for (let i = 0; i < data.data.length; i++) {
+      const imageData = data.data[i];
+      const imageUrl = imageData.url;
+
+      if (!imageUrl) {
+        console.warn(`⚠️ [Ideogram] No URL for image ${i + 1}`);
+        continue;
+      }
+
+      try {
+        // Download image from Ideogram URL
+        const imageResponse = await fetch(imageUrl);
+        if (!imageResponse.ok) {
+          console.error(`❌ Failed to download image from Ideogram URL: ${imageUrl}`);
+          continue;
+        }
+
+        const arrayBuffer = await imageResponse.arrayBuffer();
+        const buffer = Buffer.from(arrayBuffer);
+
+        const filename = `ideogram_${timestamp}_${i + 1}.png`;
+        const filepath = path.join(outputDir, filename);
+        const tempPath = path.join(outputDir, `temp_${filename}`);
+
+        // Save original temporarily
+        fs.writeFileSync(tempPath, buffer);
+
+        // Try to remove background with Python rembg
+        try {
+          execSync(`python3 remove-bg.py "${tempPath}" "${filepath}"`, {
+            cwd: process.cwd(),
+            stdio: 'inherit'
+          });
+          console.log(`✅ [Ideogram] Background removed for image ${i + 1}`);
+        } catch (pythonErr) {
+          console.error(`❌ Python rembg failed for image ${i + 1}, using original`);
+          fs.writeFileSync(filepath, buffer);
+        }
+
+        // Remove temp file
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+
+        // Trim transparent edges
+        const trimmed = await sharp(filepath).trim().toBuffer();
+        fs.writeFileSync(filepath, trimmed);
+
+        // Resize + WebP conversion
+        const webpBuffer = await sharp(trimmed)
+          .resize({ width: 512, height: 512, fit: "inside", withoutEnlargement: true })
+          .webp({ quality: 90 })
+          .toBuffer();
+
+        const webpName = filename.replace(".png", ".webp");
+        const webpPath = path.join(outputDir, webpName);
+        fs.writeFileSync(webpPath, webpBuffer);
+
+        // Build URLs
+        const directUrl = `http://localhost:3005/output/${filename}`;
+        const pngUrl = PROXY_BASE_URL ? `${PROXY_BASE_URL}/api/proxy-image?url=${encodeURIComponent(directUrl)}` : `https://${req.get("host")}/output/${filename}`;
+        const webpDirectUrl = `http://localhost:3005/output/${webpName}`;
+        const webpUrl = PROXY_BASE_URL ? `${PROXY_BASE_URL}/api/proxy-image?url=${encodeURIComponent(webpDirectUrl)}` : `https://${req.get("host")}/output/${webpName}`;
+
+        images.push({
+          index: i + 1,
+          url: pngUrl,
+          webp_url: webpUrl,
+          seed: imageData.seed,
+          style_type: imageData.style_type
+        });
+
+        console.log(`✅ [Ideogram] Image ${i + 1} processed`);
+      } catch (imgErr) {
+        console.error(`❌ [Ideogram] Error processing image ${i + 1}:`, imgErr);
+      }
+    }
+
+    console.log(`🎉 [Ideogram] Generation complete: ${images.length}/${numImages} images`);
+
+    res.json({
+      provider: "ideogram",
+      count: images.length,
+      images
+    });
+
+  } catch (err) {
+    console.error("❌ Ideogram image generation failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
 // === FAVICON PREVIEW - returns original AI image without processing ===
 app.post("/generate-favicon-preview", authMiddleware, async (req, res) => {
   try {
@@ -1689,6 +1832,63 @@ function authMiddleware(req, res, next) {
   next();
 }
 
+
+// ================== PROCESS UPLOADED LOGO (REMBG + TRIM) ==================
+app.post("/process-uploaded-logo", authMiddleware, async (req, res) => {
+  try {
+    const { image_base64 } = req.body;
+    
+    if (!image_base64) {
+      return res.status(400).json({ error: "image_base64 is required" });
+    }
+
+    console.log(`🔧 [Upload] Processing uploaded logo with rembg + trim...`);
+
+    const timestamp = Date.now();
+    const buffer = Buffer.from(image_base64, "base64");
+
+    // Save temporary file
+    const tempInputPath = path.join(outputDir, `upload_temp_${timestamp}.png`);
+    const tempOutputPath = path.join(outputDir, `upload_nobg_${timestamp}.png`);
+    
+    fs.writeFileSync(tempInputPath, buffer);
+
+    // Remove background with Python rembg
+    try {
+      execSync(`python3 remove-bg.py "${tempInputPath}" "${tempOutputPath}"`, {
+        cwd: process.cwd(),
+        stdio: 'inherit'
+      });
+      console.log(`✅ [Upload] Background removed`);
+    } catch (pythonErr) {
+      console.error(`❌ Python rembg failed, using original`);
+      fs.writeFileSync(tempOutputPath, buffer);
+    }
+
+    // Trim transparent edges
+    const trimmed = await sharp(tempOutputPath).trim().toBuffer();
+    
+    // Convert to PNG and WebP
+    const finalPng = await sharp(trimmed).png().toBuffer();
+    const finalWebp = await sharp(trimmed).webp({ quality: 90 }).toBuffer();
+
+    // Cleanup temp files
+    if (fs.existsSync(tempInputPath)) fs.unlinkSync(tempInputPath);
+    if (fs.existsSync(tempOutputPath)) fs.unlinkSync(tempOutputPath);
+
+    console.log(`✅ [Upload] Logo processed successfully`);
+
+    res.json({
+      success: true,
+      png_base64: finalPng.toString("base64"),
+      webp_base64: finalWebp.toString("base64"),
+    });
+
+  } catch (err) {
+    console.error("❌ Uploaded logo processing failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 app.listen(process.env.PORT, () =>
   console.log(`✅ OpenAI API running on port ${process.env.PORT}`)
