@@ -422,6 +422,8 @@ async function collectAnalytics(intervalMinutes) {
             
             const hour = new Date(stats.datetime).toISOString().slice(11, 16);
             log(`${zone.name} [${hour}]: ${stats.requests.toLocaleString()} req, ${stats.uniqueVisitors.toLocaleString()} visitors, ${formatBytes(stats.bytes)} (${result})`);
+          } else {
+            log(`${zone.name}: немає даних за цю годину (пропущено)`, 'warn');
           }
         } catch (error) {
           log(`Помилка для ${zone.name}: ${error.message}`, 'error');

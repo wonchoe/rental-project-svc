@@ -104,7 +104,7 @@ async function getAllZones() {
   try {
     const pool = await getPool();
     const [zones] = await pool.execute(
-      'SELECT zone_id, name, status FROM cf_zones WHERE status = ? ORDER BY name',
+      'SELECT zone_id, name, status, account_id FROM cf_zones WHERE status = ? ORDER BY name',
       ['active']
     );
     
@@ -113,7 +113,8 @@ async function getAllZones() {
     return zones.map(zone => ({
       id: zone.zone_id,  // Реальний Cloudflare zone ID
       name: zone.name,
-      status: zone.status
+      status: zone.status,
+      _accountId: zone.account_id
     }));
   } catch (error) {
     log(`Помилка отримання зон з БД: ${error.message}`, 'error');
@@ -141,9 +142,12 @@ async function getAllZonesFromAPI() {
 }
 
 // Отримати щоденну аналітику для зони за кілька днів
-async function getZoneDailyAnalytics(zoneId, days = 2) {
+async function getZoneDailyAnalytics(zoneId, accountId, days = 2) {
   const today = getDateUTC(0);
   const startDate = getDateUTC(-days + 1);
+  
+  // Визначаємо який токен використовувати
+  const apiKey = accountId === ACCOUNT_ID_2 ? CLOUDFLARE_API_KEY_2 : CLOUDFLARE_API_KEY;
   
   const query = `
     query {
@@ -199,7 +203,7 @@ async function getZoneDailyAnalytics(zoneId, days = 2) {
   try {
     const response = await fetch('https://api.cloudflare.com/client/v4/graphql', {
       method: 'POST',
-      headers: getHeaders(),
+      headers: getHeaders(apiKey),
       body: JSON.stringify({ query })
     });
 
@@ -425,7 +429,7 @@ async function collectDailyAnalytics(days = 2) {
 
       for (const zone of zones) {
         try {
-          const dailyStats = await getZoneDailyAnalytics(zone.id, days);
+          const dailyStats = await getZoneDailyAnalytics(zone.id, zone._accountId, days);
           
           if (dailyStats.length === 0) {
             continue;
