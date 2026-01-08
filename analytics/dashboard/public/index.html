@@ -4,7 +4,24 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Cloudflare Analytics Dashboard</title>
-  <link rel="stylesheet" href="/css/styles.css">
+    <link rel="stylesheet" href="/css/styles.css">
+  <script src="https://cdn.tailwindcss.com?plugins=forms,typography,aspect-ratio"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            dark: {
+              900: '#0f0f0f',
+              800: '#1a1a1a',
+              700: '#2d2d2d',
+            }
+          }
+        }
+      }
+    }
+  </script>
   <script src="https://cdn.jsdelivr.net/npm/apexcharts"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -26,7 +43,7 @@
     .apexcharts-tooltip-title { background: #313244 !important; }
   </style>
 </head>
-<body class="bg-gray-900 text-gray-100 min-h-screen"
+<body class="bg-gray-900 text-gray-100 min-h-screen">
   <!-- Navigation -->
   <nav class="fixed top-0 left-0 right-0 z-50 glass border-b border-dark-700">
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
