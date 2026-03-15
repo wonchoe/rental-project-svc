@@ -455,6 +455,69 @@ app.post("/generate-favicon-preview-qwen", authMiddleware, async (req, res) => {
   }
 });
 
+// === IDEOGRAM FAVICON PREVIEW - returns original AI image without processing ===
+app.post("/generate-favicon-preview-ideogram", authMiddleware, async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    console.log(`🎨 [Ideogram] Generating favicon preview: "${prompt}"`);
+
+    const apiKey = process.env.IDEOGRAM_API_KEY;
+    if (!apiKey) {
+      throw new Error("IDEOGRAM_API_KEY not configured");
+    }
+
+    const strictPrompt = [
+      prompt,
+      "Create ONE square app icon composition.",
+      "No text, no letters, no words, no typography.",
+      "Centered symbol only, clean minimal icon, white or transparent style background.",
+      "Do not create horizontal logo layout."
+    ].join(" ");
+
+    const formData = new FormData();
+    formData.append("prompt", strictPrompt);
+    formData.append("aspect_ratio", "1x1");
+    formData.append("num_images", "1");
+    formData.append("rendering_speed", "TURBO");
+    formData.append("magic_prompt", "OFF");
+
+    const response = await fetch("https://api.ideogram.ai/v1/ideogram-v3/generate", {
+      method: "POST",
+      headers: {
+        "Api-Key": apiKey
+      },
+      body: formData
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      console.error("❌ [Ideogram] Favicon API error:", data);
+      throw new Error(data?.error?.message || `Ideogram API error: ${response.status}`);
+    }
+
+    const imageUrl = data?.data?.[0]?.url;
+    if (!imageUrl) {
+      throw new Error("No image URL returned from Ideogram favicon API");
+    }
+
+    const imageRes = await fetch(imageUrl);
+    if (!imageRes.ok) {
+      throw new Error(`Failed to download Ideogram favicon image: ${imageRes.status}`);
+    }
+
+    const imageBuffer = Buffer.from(await imageRes.arrayBuffer());
+
+    console.log("✅ [Ideogram] Favicon preview generated");
+    res.json({
+      success: true,
+      original_base64: imageBuffer.toString("base64"),
+    });
+  } catch (err) {
+    console.error("❌ [Ideogram] Favicon preview failed:", err);
+    res.status(500).json({ success: false, error: err.message });
+  }
+});
+
 // === PROCESS FAVICON - remove white background, crop, generate PWA icons ===
 app.post("/process-favicon", authMiddleware, async (req, res) => {
   try {
@@ -872,7 +935,13 @@ app.post("/generate", authMiddleware, async (req, res) => {
 app.post("/text", authMiddleware, async (req, res) => {
   try {
     console.log("🧠 Text generation request received.");
-    const { prompt, format = "", max_tokens = 10096, temperature = 0.9 } = req.body;
+    const {
+      prompt,
+      format = "",
+      max_tokens = 10096,
+      temperature = 0.9,
+      provider = "openai"
+    } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "prompt is required and must be a string" });
@@ -894,28 +963,285 @@ app.post("/text", authMiddleware, async (req, res) => {
       "\n\nIMPORTANT: reply clearly and directly with no explanations. " +
       (wantsHtml ? "Return ONLY the HTML and nothing else." : "");
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5",
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage }
-      ],
-      max_completion_tokens: maxTokens,
-      top_p: 1,
-    });
+    const normalizedProvider = String(provider || "openai").toLowerCase();
+    const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
 
-    // Extract text from response (supports different response shapes)
-    const content =
-      completion?.choices?.[0]?.message?.content ??
-      completion?.choices?.[0]?.text ??
-      "";
+    let content = "";
+    if (providerUsed === "anthropic") {
+      console.log("🧠 /text using provider=anthropic model=", process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5");
+      content = await generateTextWithAnthropic({
+        systemMessage,
+        userMessage,
+        maxTokens,
+        temperature,
+      });
+    } else {
+      console.log("🧠 /text using provider=openai model=gpt-5");
+      const completion = await openai.chat.completions.create({
+        model: "gpt-5",
+        messages: [
+          { role: "system", content: systemMessage },
+          { role: "user", content: userMessage }
+        ],
+        max_completion_tokens: maxTokens,
+        top_p: 1,
+      });
 
-    res.json({ text: content });
+      // Extract text from response (supports different response shapes)
+      content =
+        completion?.choices?.[0]?.message?.content ??
+        completion?.choices?.[0]?.text ??
+        "";
+    }
+
+    res.json({ text: content, provider_used: providerUsed });
   } catch (err) {
     console.error("❌ Text generation failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
+
+app.get("/text-provider-status", authMiddleware, async (req, res) => {
+  try {
+    const openaiStatus = await getOpenAIStatus();
+    const anthropicStatus = await getAnthropicStatus();
+
+    res.json({
+      success: true,
+      providers: {
+        openai: openaiStatus,
+        anthropic: anthropicStatus,
+      },
+      checked_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error("❌ Provider status failed:", err);
+    res.status(500).json({ success: false, error: err.message || "provider status failed" });
+  }
+});
+
+async function generateTextWithAnthropic({ systemMessage, userMessage, maxTokens, temperature }) {
+  const anthropicKey = process.env.ANTHROPIC_API_KEY;
+  if (!anthropicKey) {
+    throw new Error("ANTHROPIC_API_KEY not configured");
+  }
+
+  const model = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+
+  const response = await fetch("https://api.anthropic.com/v1/messages", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": anthropicKey,
+      "anthropic-version": "2023-06-01"
+    },
+    body: JSON.stringify({
+      model,
+      system: systemMessage,
+      max_tokens: Math.min(Math.max(parseInt(maxTokens, 10) || 4096, 256), 8192),
+      temperature: Math.max(0, Math.min(Number(temperature ?? 0.7), 1)),
+      messages: [
+        {
+          role: "user",
+          content: userMessage
+        }
+      ]
+    })
+  });
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data?.error?.message || `Anthropic API error: ${response.status}`);
+  }
+
+  const firstText = data?.content?.find(item => item?.type === "text")?.text;
+  return firstText || "";
+}
+
+async function getOpenAIStatus() {
+  const key = process.env.OPENAI_API_KEY;
+  if (!key) {
+    return {
+      configured: false,
+      available: false,
+      balance: { display: "unavailable (no key)", value: null, currency: null, source: "none" },
+    };
+  }
+
+  let available = false;
+  try {
+    const modelProbe = await fetch("https://api.openai.com/v1/models", {
+      headers: { Authorization: `Bearer ${key}` }
+    });
+    available = modelProbe.ok;
+  } catch (_) {
+    available = false;
+  }
+
+  // Best-effort legacy balance endpoint. May be unavailable for many accounts.
+  let balanceDisplay = "unavailable via API";
+  let balanceValue = null;
+  let balanceCurrency = "USD";
+
+  try {
+    const balanceRes = await fetch("https://api.openai.com/dashboard/billing/credit_grants", {
+      headers: { Authorization: `Bearer ${key}` }
+    });
+
+    if (balanceRes.ok) {
+      const balanceData = await balanceRes.json();
+      const total = Number(balanceData?.total_available ?? 0);
+      if (Number.isFinite(total)) {
+        balanceValue = total;
+        balanceDisplay = `$${total.toFixed(2)}`;
+      }
+    }
+  } catch (_) {
+    // Ignore and keep unavailable state.
+  }
+
+  return {
+    configured: true,
+    available,
+    balance: {
+      display: balanceDisplay,
+      value: balanceValue,
+      currency: balanceCurrency,
+      source: balanceValue === null ? "unavailable" : "openai_legacy_credit_grants",
+    },
+  };
+}
+
+async function getAnthropicStatus() {
+  const runtimeKey = process.env.ANTHROPIC_API_KEY;
+  const adminKey = process.env.ANTHROPIC_ADMIN_API_KEY || "";
+
+  if (!runtimeKey && !adminKey) {
+    return {
+      configured: false,
+      available: false,
+      balance: { display: "unavailable (no key)", value: null, currency: null, source: "none" },
+    };
+  }
+
+  let available = false;
+  try {
+    // Runtime connectivity check for Claude message generation.
+    if (!runtimeKey) {
+      available = false;
+    } else {
+    const probe = await fetch("https://api.anthropic.com/v1/models", {
+      method: "GET",
+      headers: {
+        "x-api-key": runtimeKey,
+        "anthropic-version": "2023-06-01"
+      }
+    });
+    available = probe.ok;
+    }
+  } catch (_) {
+    available = false;
+  }
+
+  // Usage/Cost API requires an Admin API key (sk-ant-admin...).
+  let balanceDisplay = "unavailable via API";
+  let balanceValue = null;
+  let balanceSource = "not_exposed";
+
+  if (!adminKey) {
+    balanceDisplay = "needs ANTHROPIC_ADMIN_API_KEY";
+    balanceSource = "missing_admin_key";
+  } else if (!adminKey.startsWith("sk-ant-admin")) {
+    balanceDisplay = "admin key required (sk-ant-admin...)";
+    balanceSource = "invalid_admin_key_type";
+  } else {
+    try {
+      const range = getUtcDayRange(7);
+      const url = new URL("https://api.anthropic.com/v1/organizations/cost_report");
+      url.searchParams.set("starting_at", range.startingAt);
+      url.searchParams.set("ending_at", range.endingAt);
+      url.searchParams.append("group_by[]", "description");
+
+      const costRes = await fetch(url.toString(), {
+        method: "GET",
+        headers: {
+          "x-api-key": adminKey,
+          "anthropic-version": "2023-06-01",
+          "User-Agent": "rental-project/1.0"
+        }
+      });
+
+      if (costRes.ok) {
+        const costData = await costRes.json();
+        const usdMinor = extractUsdMinorUnits(costData);
+        if (usdMinor !== null) {
+          balanceValue = Number((usdMinor / 100).toFixed(2));
+          balanceDisplay = `$${balanceValue.toFixed(2)} spent (last 7d)`;
+          balanceSource = "anthropic_cost_report";
+        } else {
+          balanceDisplay = "no cost data yet";
+          balanceSource = "anthropic_cost_report_empty";
+        }
+      } else if (costRes.status === 401 || costRes.status === 403) {
+        balanceDisplay = "admin key rejected";
+        balanceSource = "anthropic_admin_auth_failed";
+      } else {
+        balanceDisplay = `cost API error (${costRes.status})`;
+        balanceSource = "anthropic_cost_report_error";
+      }
+    } catch (_) {
+      balanceDisplay = "cost API unavailable";
+      balanceSource = "anthropic_cost_report_unreachable";
+    }
+  }
+
+  return {
+    configured: Boolean(runtimeKey),
+    available,
+    balance: {
+      display: balanceDisplay,
+      value: balanceValue,
+      currency: "USD",
+      source: balanceSource,
+    },
+  };
+}
+
+function getUtcDayRange(daysBack = 7) {
+  const now = new Date();
+  const end = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), 0, 0, 0));
+  const start = new Date(end);
+  start.setUTCDate(start.getUTCDate() - Math.max(1, daysBack));
+
+  return {
+    startingAt: start.toISOString().replace(".000", ""),
+    endingAt: end.toISOString().replace(".000", ""),
+  };
+}
+
+function extractUsdMinorUnits(costData) {
+  const buckets = Array.isArray(costData?.data) ? costData.data : [];
+  let totalMinor = 0;
+  let found = false;
+
+  for (const bucket of buckets) {
+    const results = Array.isArray(bucket?.results) ? bucket.results : [];
+    for (const row of results) {
+      const amount = row?.amount || row?.cost || row?.total_cost || null;
+      if (!amount || String(amount.currency || "").toUpperCase() !== "USD") {
+        continue;
+      }
+
+      const minor = Number(amount.value);
+      if (Number.isFinite(minor)) {
+        totalMinor += minor;
+        found = true;
+      }
+    }
+  }
+
+  return found ? totalMinor : null;
+}
 
 
 // ============================================================================
@@ -1711,17 +2037,39 @@ const translated =
 app.post("/article", authMiddleware, async (req, res) => {
   try {
     console.log("🧠 Deep article generation request received.");
-    const { prompt } = req.body;
+    const { prompt, provider = "openai" } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "prompt is required and must be a string" });
     }
+
+    const normalizedProvider = String(provider || "openai").toLowerCase();
+    const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
 
     const systemMessage =
       "You are a professional SEO writer who creates long, well-structured HTML articles with clear headings, subheadings, lists, tables, and FAQ sections when needed. " +
       "Focus on factual, detailed, and logically organized content. Return ONLY raw HTML (no markdown, code fences, or explanations).";
 
     const userMessage = `${prompt}\n\nIMPORTANT: Return ONLY the full HTML of a comprehensive article.`;
+
+    if (providerUsed === "anthropic") {
+      const content = await generateTextWithAnthropic({
+        systemMessage,
+        userMessage,
+        maxTokens: 12000,
+        temperature: 0.4,
+      });
+
+      const modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+      console.log(`🧠 /article using provider=anthropic model=${modelUsed}`);
+      console.log("✅ Deep article generated (anthropic). Length:", String(content || "").length);
+
+      return res.json({
+        provider_used: "anthropic",
+        model_used: modelUsed,
+        html: content,
+      });
+    }
 
     const completion = await openai.chat.completions.create({
       model: "gpt-5.1", // reasoning model
@@ -1734,16 +2082,18 @@ app.post("/article", authMiddleware, async (req, res) => {
       verbosity: "high"         // produce longer and more detailed output
     });
 
-    console.log("✅ Deep article generated.", completion);
     const content =
       completion?.choices?.[0]?.message?.content ??
       completion?.choices?.[0]?.delta?.content ??
       completion?.choices?.[0]?.text ??
       "";
 
-      console.log("✅ Deep article generated.", content);
+    console.log("🧠 /article using provider=openai model=gpt-5.1");
+    console.log("✅ Deep article generated (openai). Length:", String(content || "").length);
 
     res.json({
+      provider_used: "openai",
+      model_used: "gpt-5.1",
       model: "gpt-5.1",
       tokens_used: completion?.usage?.total_tokens,
       html: content,
@@ -1758,11 +2108,14 @@ app.post("/article", authMiddleware, async (req, res) => {
 app.post("/style", authMiddleware, async (req, res) => {
   try {
     console.log("🎨 Style generation request received.");
-    const { prompt } = req.body;
+    const { prompt, provider = "openai" } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "prompt is required and must be a string" });
     }
+
+    const normalizedProvider = String(provider || "openai").toLowerCase();
+    const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
 
     const systemMessage =
       "You are a professional web designer who generates pure CSS code for websites. " +
@@ -1772,25 +2125,42 @@ app.post("/style", authMiddleware, async (req, res) => {
     const userMessage =
       `${prompt}\n\nIMPORTANT: Return ONLY raw CSS — start directly with selectors, no comments or text before or after.`;
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5.1",
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage }
-      ],
-      max_completion_tokens: 20000,
-      reasoning_effort: "medium"
-    });
-
-    // 🧩 Отримуємо сам CSS
     let content = "";
-    const choice = completion?.choices?.[0];
-    if (choice) {
-      content =
-        choice.message?.content?.trim() ||
-        choice.delta?.content?.trim() ||
-        choice.text?.trim() ||
-        "";
+    let modelUsed = "";
+    let tokensUsed;
+
+    if (providerUsed === "anthropic") {
+      content = await generateTextWithAnthropic({
+        systemMessage,
+        userMessage,
+        maxTokens: 8000,
+        temperature: 0.3,
+      });
+      modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+      console.log(`🧠 /style using provider=anthropic model=${modelUsed}`);
+    } else {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-5.1",
+        messages: [
+          { role: "system", content: systemMessage },
+          { role: "user", content: userMessage }
+        ],
+        max_completion_tokens: 20000,
+        reasoning_effort: "medium"
+      });
+
+      const choice = completion?.choices?.[0];
+      if (choice) {
+        content =
+          choice.message?.content?.trim() ||
+          choice.delta?.content?.trim() ||
+          choice.text?.trim() ||
+          "";
+      }
+
+      modelUsed = "gpt-5.1";
+      tokensUsed = completion?.usage?.total_tokens;
+      console.log("🧠 /style using provider=openai model=gpt-5.1");
     }
 
     if (!content) {
@@ -1804,8 +2174,10 @@ app.post("/style", authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      model: completion.model,
-      tokens_used: completion?.usage?.total_tokens,
+      provider_used: providerUsed,
+      model_used: modelUsed,
+      model: modelUsed,
+      tokens_used: tokensUsed,
       css: content
     });
   } catch (err) {
