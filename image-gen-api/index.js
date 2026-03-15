@@ -952,7 +952,8 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
       format = "",
       max_tokens = 10096,
       temperature = 0.9,
-      provider = "openai"
+      provider = "openai",
+      model = ""
     } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
@@ -976,9 +977,10 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
     const normalizedProvider = String(providerCandidate).toLowerCase();
     const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
     let finalProviderUsed = providerUsed;
+    const openAiModel = resolveOpenAIModel(model, "gpt-5");
     let modelUsed = providerUsed === "anthropic"
       ? (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5")
-      : "gpt-5";
+      : openAiModel;
 
     let content = "";
     if (providerUsed === "anthropic") {
@@ -990,10 +992,10 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
         temperature,
       });
     } else {
-      console.log("🧠 /text using provider=openai model=gpt-5");
+      console.log(`🧠 /text using provider=openai model=${openAiModel}`);
       try {
         const completion = await openai.chat.completions.create({
-          model: "gpt-5",
+          model: openAiModel,
           messages: [
             { role: "system", content: systemMessage },
             { role: "user", content: userMessage }
@@ -1113,6 +1115,33 @@ function isOpenAIQuotaOrRateLimitError(err) {
     message.includes("rate limit") ||
     message.includes("billing")
   );
+}
+
+function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
+  const cheapDefault = process.env.OPENAI_MODEL_CHEAP || "gpt-4o-mini";
+  const qualityDefault = process.env.OPENAI_MODEL_QUALITY || fallbackModel || "gpt-5.1";
+  const raw = String(requestedModel || "").toLowerCase().trim();
+
+  if (!raw) {
+    return qualityDefault;
+  }
+
+  if (raw === "cheap" || raw === "openai-cheap") {
+    return cheapDefault;
+  }
+
+  if (raw === "quality" || raw === "openai-quality" || raw === "pro") {
+    return qualityDefault;
+  }
+
+  const allowed = new Set([
+    "gpt-4o-mini",
+    "gpt-4.1-mini",
+    "gpt-5",
+    "gpt-5.1",
+  ]);
+
+  return allowed.has(raw) ? raw : qualityDefault;
 }
 
 async function getOpenAIStatus() {
@@ -2094,7 +2123,7 @@ const translated =
 app.post("/article", authMiddleware, async (req, res) => {
   try {
     console.log("🧠 Deep article generation request received.");
-    const { prompt, provider = "openai" } = req.body;
+    const { prompt, provider = "openai", model = "" } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "prompt is required and must be a string" });
@@ -2129,13 +2158,14 @@ app.post("/article", authMiddleware, async (req, res) => {
     }
 
     let content = "";
-    let modelUsed = "gpt-5.1";
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.1");
+    let modelUsed = openAiModel;
     let tokensUsed;
     let finalProviderUsed = "openai";
 
     try {
       const completion = await openai.chat.completions.create({
-        model: "gpt-5.1", // reasoning model
+        model: openAiModel,
         messages: [
           { role: "system", content: systemMessage },
           { role: "user", content: userMessage },
@@ -2152,7 +2182,7 @@ app.post("/article", authMiddleware, async (req, res) => {
         "";
       tokensUsed = completion?.usage?.total_tokens;
 
-      console.log("🧠 /article using provider=openai model=gpt-5.1");
+      console.log(`🧠 /article using provider=openai model=${openAiModel}`);
       console.log("✅ Deep article generated (openai). Length:", String(content || "").length);
     } catch (err) {
       if (isOpenAIQuotaOrRateLimitError(err) && canFallbackToAnthropic()) {
@@ -2189,7 +2219,7 @@ app.post("/article", authMiddleware, async (req, res) => {
 app.post("/style", authMiddleware, async (req, res) => {
   try {
     console.log("🎨 Style generation request received.");
-    const { prompt, provider = "openai" } = req.body;
+    const { prompt, provider = "openai", model = "" } = req.body;
 
     if (!prompt || typeof prompt !== "string") {
       return res.status(400).json({ error: "prompt is required and must be a string" });
@@ -2210,6 +2240,7 @@ app.post("/style", authMiddleware, async (req, res) => {
     let modelUsed = "";
     let tokensUsed;
     let finalProviderUsed = providerUsed;
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.1");
 
     if (providerUsed === "anthropic") {
       content = await generateTextWithAnthropic({
@@ -2223,7 +2254,7 @@ app.post("/style", authMiddleware, async (req, res) => {
     } else {
       try {
         const completion = await openai.chat.completions.create({
-          model: "gpt-5.1",
+          model: openAiModel,
           messages: [
             { role: "system", content: systemMessage },
             { role: "user", content: userMessage }
@@ -2241,9 +2272,9 @@ app.post("/style", authMiddleware, async (req, res) => {
             "";
         }
 
-        modelUsed = "gpt-5.1";
+        modelUsed = openAiModel;
         tokensUsed = completion?.usage?.total_tokens;
-        console.log("🧠 /style using provider=openai model=gpt-5.1");
+        console.log(`🧠 /style using provider=openai model=${openAiModel}`);
       } catch (err) {
         if (isOpenAIQuotaOrRateLimitError(err) && canFallbackToAnthropic()) {
           console.warn("⚠️ OpenAI quota/rate limit on /style. Falling back to Anthropic.");
