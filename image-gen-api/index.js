@@ -965,6 +965,7 @@ app.post("/text", authMiddleware, async (req, res) => {
 
     const normalizedProvider = String(provider || "openai").toLowerCase();
     const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
+    let finalProviderUsed = providerUsed;
 
     let content = "";
     if (providerUsed === "anthropic") {
@@ -977,24 +978,39 @@ app.post("/text", authMiddleware, async (req, res) => {
       });
     } else {
       console.log("🧠 /text using provider=openai model=gpt-5");
-      const completion = await openai.chat.completions.create({
-        model: "gpt-5",
-        messages: [
-          { role: "system", content: systemMessage },
-          { role: "user", content: userMessage }
-        ],
-        max_completion_tokens: maxTokens,
-        top_p: 1,
-      });
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-5",
+          messages: [
+            { role: "system", content: systemMessage },
+            { role: "user", content: userMessage }
+          ],
+          max_completion_tokens: maxTokens,
+          top_p: 1,
+        });
 
-      // Extract text from response (supports different response shapes)
-      content =
-        completion?.choices?.[0]?.message?.content ??
-        completion?.choices?.[0]?.text ??
-        "";
+        // Extract text from response (supports different response shapes)
+        content =
+          completion?.choices?.[0]?.message?.content ??
+          completion?.choices?.[0]?.text ??
+          "";
+      } catch (err) {
+        if (isOpenAIQuotaOrRateLimitError(err) && canFallbackToAnthropic()) {
+          console.warn("⚠️ OpenAI quota/rate limit on /text. Falling back to Anthropic.");
+          content = await generateTextWithAnthropic({
+            systemMessage,
+            userMessage,
+            maxTokens,
+            temperature,
+          });
+          finalProviderUsed = "anthropic";
+        } else {
+          throw err;
+        }
+      }
     }
 
-    res.json({ text: content, provider_used: providerUsed });
+    res.json({ text: content, provider_used: finalProviderUsed });
   } catch (err) {
     console.error("❌ Text generation failed:", err);
     res.status(500).json({ error: err.message });
@@ -1056,6 +1072,34 @@ async function generateTextWithAnthropic({ systemMessage, userMessage, maxTokens
 
   const firstText = data?.content?.find(item => item?.type === "text")?.text;
   return firstText || "";
+}
+
+function canFallbackToAnthropic() {
+  return Boolean(process.env.ANTHROPIC_API_KEY);
+}
+
+function isOpenAIQuotaOrRateLimitError(err) {
+  const status = Number(
+    err?.status ||
+    err?.response?.status ||
+    err?.cause?.status ||
+    0
+  );
+
+  const message = String(
+    err?.message ||
+    err?.error?.message ||
+    err?.response?.data?.error?.message ||
+    ""
+  ).toLowerCase();
+
+  return (
+    status === 429 ||
+    message.includes("insufficient_quota") ||
+    message.includes("quota") ||
+    message.includes("rate limit") ||
+    message.includes("billing")
+  );
 }
 
 async function getOpenAIStatus() {
@@ -2071,31 +2115,55 @@ app.post("/article", authMiddleware, async (req, res) => {
       });
     }
 
-    const completion = await openai.chat.completions.create({
-      model: "gpt-5.1", // reasoning model
-      messages: [
-        { role: "system", content: systemMessage },
-        { role: "user", content: userMessage },
-      ],
-      max_completion_tokens: 50000,
-      reasoning_effort: "high", // make the model "think deeper"
-      verbosity: "high"         // produce longer and more detailed output
-    });
+    let content = "";
+    let modelUsed = "gpt-5.1";
+    let tokensUsed;
+    let finalProviderUsed = "openai";
 
-    const content =
-      completion?.choices?.[0]?.message?.content ??
-      completion?.choices?.[0]?.delta?.content ??
-      completion?.choices?.[0]?.text ??
-      "";
+    try {
+      const completion = await openai.chat.completions.create({
+        model: "gpt-5.1", // reasoning model
+        messages: [
+          { role: "system", content: systemMessage },
+          { role: "user", content: userMessage },
+        ],
+        max_completion_tokens: 50000,
+        reasoning_effort: "high", // make the model "think deeper"
+        verbosity: "high"         // produce longer and more detailed output
+      });
 
-    console.log("🧠 /article using provider=openai model=gpt-5.1");
-    console.log("✅ Deep article generated (openai). Length:", String(content || "").length);
+      content =
+        completion?.choices?.[0]?.message?.content ??
+        completion?.choices?.[0]?.delta?.content ??
+        completion?.choices?.[0]?.text ??
+        "";
+      tokensUsed = completion?.usage?.total_tokens;
+
+      console.log("🧠 /article using provider=openai model=gpt-5.1");
+      console.log("✅ Deep article generated (openai). Length:", String(content || "").length);
+    } catch (err) {
+      if (isOpenAIQuotaOrRateLimitError(err) && canFallbackToAnthropic()) {
+        console.warn("⚠️ OpenAI quota/rate limit on /article. Falling back to Anthropic.");
+        content = await generateTextWithAnthropic({
+          systemMessage,
+          userMessage,
+          maxTokens: 12000,
+          temperature: 0.4,
+        });
+        finalProviderUsed = "anthropic";
+        modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+        console.log(`🧠 /article fallback provider=anthropic model=${modelUsed}`);
+        console.log("✅ Deep article generated (anthropic fallback). Length:", String(content || "").length);
+      } else {
+        throw err;
+      }
+    }
 
     res.json({
-      provider_used: "openai",
-      model_used: "gpt-5.1",
-      model: "gpt-5.1",
-      tokens_used: completion?.usage?.total_tokens,
+      provider_used: finalProviderUsed,
+      model_used: modelUsed,
+      model: modelUsed,
+      tokens_used: tokensUsed,
       html: content,
     });
   } catch (err) {
@@ -2128,6 +2196,7 @@ app.post("/style", authMiddleware, async (req, res) => {
     let content = "";
     let modelUsed = "";
     let tokensUsed;
+    let finalProviderUsed = providerUsed;
 
     if (providerUsed === "anthropic") {
       content = await generateTextWithAnthropic({
@@ -2139,28 +2208,45 @@ app.post("/style", authMiddleware, async (req, res) => {
       modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
       console.log(`🧠 /style using provider=anthropic model=${modelUsed}`);
     } else {
-      const completion = await openai.chat.completions.create({
-        model: "gpt-5.1",
-        messages: [
-          { role: "system", content: systemMessage },
-          { role: "user", content: userMessage }
-        ],
-        max_completion_tokens: 20000,
-        reasoning_effort: "medium"
-      });
+      try {
+        const completion = await openai.chat.completions.create({
+          model: "gpt-5.1",
+          messages: [
+            { role: "system", content: systemMessage },
+            { role: "user", content: userMessage }
+          ],
+          max_completion_tokens: 20000,
+          reasoning_effort: "medium"
+        });
 
-      const choice = completion?.choices?.[0];
-      if (choice) {
-        content =
-          choice.message?.content?.trim() ||
-          choice.delta?.content?.trim() ||
-          choice.text?.trim() ||
-          "";
+        const choice = completion?.choices?.[0];
+        if (choice) {
+          content =
+            choice.message?.content?.trim() ||
+            choice.delta?.content?.trim() ||
+            choice.text?.trim() ||
+            "";
+        }
+
+        modelUsed = "gpt-5.1";
+        tokensUsed = completion?.usage?.total_tokens;
+        console.log("🧠 /style using provider=openai model=gpt-5.1");
+      } catch (err) {
+        if (isOpenAIQuotaOrRateLimitError(err) && canFallbackToAnthropic()) {
+          console.warn("⚠️ OpenAI quota/rate limit on /style. Falling back to Anthropic.");
+          content = await generateTextWithAnthropic({
+            systemMessage,
+            userMessage,
+            maxTokens: 8000,
+            temperature: 0.3,
+          });
+          modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
+          finalProviderUsed = "anthropic";
+          console.log(`🧠 /style fallback provider=anthropic model=${modelUsed}`);
+        } else {
+          throw err;
+        }
       }
-
-      modelUsed = "gpt-5.1";
-      tokensUsed = completion?.usage?.total_tokens;
-      console.log("🧠 /style using provider=openai model=gpt-5.1");
     }
 
     if (!content) {
@@ -2174,7 +2260,7 @@ app.post("/style", authMiddleware, async (req, res) => {
 
     res.json({
       success: true,
-      provider_used: providerUsed,
+      provider_used: finalProviderUsed,
       model_used: modelUsed,
       model: modelUsed,
       tokens_used: tokensUsed,
