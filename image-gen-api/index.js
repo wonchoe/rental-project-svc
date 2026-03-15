@@ -977,7 +977,7 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
     const normalizedProvider = String(providerCandidate).toLowerCase();
     const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
     let finalProviderUsed = providerUsed;
-    const openAiModel = resolveOpenAIModel(model, "gpt-5");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_CHEAP || "gpt-5-mini");
     let modelUsed = providerUsed === "anthropic"
       ? (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5")
       : openAiModel;
@@ -1118,8 +1118,8 @@ function isOpenAIQuotaOrRateLimitError(err) {
 }
 
 function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
-  const cheapDefault = process.env.OPENAI_MODEL_CHEAP || "gpt-4o-mini";
-  const qualityDefault = process.env.OPENAI_MODEL_QUALITY || fallbackModel || "gpt-5.1";
+  const cheapDefault = process.env.OPENAI_MODEL_CHEAP || "gpt-5-mini";
+  const qualityDefault = process.env.OPENAI_MODEL_QUALITY || fallbackModel || "gpt-5.4";
   const raw = String(requestedModel || "").toLowerCase().trim();
 
   if (!raw) {
@@ -1135,11 +1135,15 @@ function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
   }
 
   const allowed = new Set([
-    "gpt-4o-mini",
-    "gpt-4.1-mini",
-    "gpt-5",
+    "gpt-5-nano",
+    "gpt-5-mini",
     "gpt-5.1",
+    "gpt-5.4",
   ]);
+
+  if (raw === "gpt-4o-mini" || raw === "gpt-4.1-mini" || raw === "gpt-5") {
+    return "gpt-5-mini";
+  }
 
   return allowed.has(raw) ? raw : qualityDefault;
 }
@@ -2158,7 +2162,7 @@ app.post("/article", authMiddleware, async (req, res) => {
     }
 
     let content = "";
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.1");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
     let modelUsed = openAiModel;
     let tokensUsed;
     let finalProviderUsed = "openai";
@@ -2171,8 +2175,8 @@ app.post("/article", authMiddleware, async (req, res) => {
           { role: "user", content: userMessage },
         ],
         max_completion_tokens: 50000,
-        reasoning_effort: "high", // make the model "think deeper"
-        verbosity: "high"         // produce longer and more detailed output
+        reasoning_effort: openAiModel === "gpt-5-nano" ? "low" : "medium",
+        verbosity: "medium"
       });
 
       content =
@@ -2240,7 +2244,7 @@ app.post("/style", authMiddleware, async (req, res) => {
     let modelUsed = "";
     let tokensUsed;
     let finalProviderUsed = providerUsed;
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.1");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
 
     if (providerUsed === "anthropic") {
       content = await generateTextWithAnthropic({
