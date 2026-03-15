@@ -933,6 +933,18 @@ app.post("/generate", authMiddleware, async (req, res) => {
 });
 
 app.post("/text", authMiddleware, async (req, res) => {
+  await handleTextGeneration(req, res, null);
+});
+
+app.post("/text/openai", authMiddleware, async (req, res) => {
+  await handleTextGeneration(req, res, "openai");
+});
+
+app.post("/text/anthropic", authMiddleware, async (req, res) => {
+  await handleTextGeneration(req, res, "anthropic");
+});
+
+async function handleTextGeneration(req, res, forcedProvider = null) {
   try {
     console.log("🧠 Text generation request received.");
     const {
@@ -947,29 +959,30 @@ app.post("/text", authMiddleware, async (req, res) => {
       return res.status(400).json({ error: "prompt is required and must be a string" });
     }
 
-    // Cap tokens to a reasonable upper bound to avoid accidental huge requests
     const maxTokens = Math.min(parseInt(max_tokens, 10) || 10096, 16000);
 
-    // System-level instruction that enforces concise direct answers and HTML-only responses when requested
     const systemMessage =
       "You are an assistant that always replies in a clear, direct and concise way without explanations or extra commentary. " +
       "If the user requests HTML, return ONLY the raw HTML (no surrounding text, no code fences, no comments). " +
       "Always follow the user's requested format exactly.";
 
-    // Reinforce the constraints in the user message as well
     const wantsHtml = (String(format).toLowerCase() === "html");
     const userMessage =
       prompt +
       "\n\nIMPORTANT: reply clearly and directly with no explanations. " +
       (wantsHtml ? "Return ONLY the HTML and nothing else." : "");
 
-    const normalizedProvider = String(provider || "openai").toLowerCase();
+    const providerCandidate = (forcedProvider || provider || "openai");
+    const normalizedProvider = String(providerCandidate).toLowerCase();
     const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
     let finalProviderUsed = providerUsed;
+    let modelUsed = providerUsed === "anthropic"
+      ? (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5")
+      : "gpt-5";
 
     let content = "";
     if (providerUsed === "anthropic") {
-      console.log("🧠 /text using provider=anthropic model=", process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5");
+      console.log("🧠 /text using provider=anthropic model=", modelUsed);
       content = await generateTextWithAnthropic({
         systemMessage,
         userMessage,
@@ -989,7 +1002,6 @@ app.post("/text", authMiddleware, async (req, res) => {
           top_p: 1,
         });
 
-        // Extract text from response (supports different response shapes)
         content =
           completion?.choices?.[0]?.message?.content ??
           completion?.choices?.[0]?.text ??
@@ -1004,18 +1016,19 @@ app.post("/text", authMiddleware, async (req, res) => {
             temperature,
           });
           finalProviderUsed = "anthropic";
+          modelUsed = process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5";
         } else {
           throw err;
         }
       }
     }
 
-    res.json({ text: content, provider_used: finalProviderUsed });
+    res.json({ text: content, provider_used: finalProviderUsed, model_used: modelUsed });
   } catch (err) {
     console.error("❌ Text generation failed:", err);
     res.status(500).json({ error: err.message });
   }
-});
+}
 
 app.get("/text-provider-status", authMiddleware, async (req, res) => {
   try {
