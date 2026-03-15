@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Install Python dependencies
-RUN pip3 install --no-cache-dir rembg[gpu] pillow --break-system-packages
+# Install Python dependencies (CPU-compatible for ARM hosts)
+RUN pip3 install --no-cache-dir rembg pillow --break-system-packages
 
 COPY package.json package-lock.json* ./
 RUN npm install
