@@ -7,6 +7,7 @@ import sharp from "sharp";
 import cors from "cors";
 import { execSync } from "child_process";
 import * as TranslationJobs from "./translation-jobs.js";
+import * as BatchTranslation from "./batch-translation.js";
 
 dotenv.config();
 
@@ -1443,6 +1444,7 @@ app.post("/translate-job-start", authMiddleware, async (req, res) => {
 
     // Create new job with optional batch size (default 50)
     const job = TranslationJobs.createJob(siteId, domain, files, batchSize || 50);
+    console.log(`🚀 [translate-job-start] Job ${job.id} created: ${domain}, ${files.length} files, batchSize: ${batchSize || 50}`);
 
     // Start processing in background
     processJob(job.id);
@@ -1453,7 +1455,7 @@ app.post("/translate-job-start", authMiddleware, async (req, res) => {
       message: "Job created and started",
     });
   } catch (err) {
-    console.error("❌ Failed to start translation job:", err);
+    console.error("❌ [translate-job-start] Failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1553,6 +1555,7 @@ app.get("/translate-job-active/:siteId", authMiddleware, (req, res) => {
 app.post("/translate-job-stop/:jobId", authMiddleware, (req, res) => {
   try {
     const { jobId } = req.params;
+    console.log(`🛑 [translate-job-stop] Stopping job ${jobId}`);
     const job = TranslationJobs.stopJob(jobId);
 
     if (!job) {
@@ -1561,10 +1564,12 @@ app.post("/translate-job-stop/:jobId", authMiddleware, (req, res) => {
 
     // Remove from active processing
     activeProcessing.delete(jobId);
+    const pending = job.files.filter(f => f.status === 'pending' || f.status === 'processing').length;
+    console.log(`🛑 [translate-job-stop] Job ${jobId} stopped. ${pending} files were pending/processing`);
 
     res.json({ success: true, job: TranslationJobs.getJobSummary(job.id) });
   } catch (err) {
-    console.error("❌ Failed to stop job:", err);
+    console.error("❌ [translate-job-stop] Failed:", err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -1593,6 +1598,7 @@ app.post("/translate-job-resume/:jobId", authMiddleware, (req, res) => {
 app.post("/translate-job-retry/:jobId", authMiddleware, async (req, res) => {
   try {
     const { jobId } = req.params;
+    console.log(`🔄 [translate-job-retry] Retrying job ${jobId}`);
     const job = TranslationJobs.getJob(jobId);
 
     if (!job) {
@@ -1912,6 +1918,8 @@ async function processJob(jobId) {
               throw new Error("Empty translation result");
             }
 
+            const tokens = completion?.usage?.total_tokens || 0;
+            console.log(`✅ Translated: ${file.path} → ${file.lang} (${tokens} tokens, ${translated.length} chars)`);
             TranslationJobs.updateFileStatus(jobId, file.path, file.lang, 'completed', {
               translated,
             });
@@ -2395,6 +2403,504 @@ app.post("/process-uploaded-logo", authMiddleware, async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// ================== BATCH API TRANSLATION ENDPOINTS ==================
+
+// Start batch translation job
+app.post("/translate-batch-start", authMiddleware, async (req, res) => {
+  try {
+    const { siteId, domain, files, model } = req.body;
+    console.log(`📦 [batch-start] Request: siteId=${siteId}, domain=${domain}, files=${files?.length}, model=${model}`);
+
+    if (!siteId || !domain || !files || !Array.isArray(files) || files.length === 0) {
+      return res.status(400).json({ error: "Required: siteId, domain, files[] with content" });
+    }
+
+    // All files must have content for batch mode
+    const missingContent = files.filter(f => !f.content);
+    if (missingContent.length > 0) {
+      return res.status(400).json({
+        error: `${missingContent.length} files missing content. Batch mode requires all content upfront.`,
+      });
+    }
+
+    // Check for existing active batch job
+    const existing = TranslationJobs.getActiveJobForSite(siteId);
+    if (existing && existing.mode === 'batch') {
+      return res.json({
+        success: true,
+        job: TranslationJobs.getJobSummary(existing.id),
+        message: 'Existing active batch job found',
+      });
+    }
+
+    const batchModel = model || 'gpt-4o-mini';
+
+    // Create job
+    const job = TranslationJobs.createBatchJob(siteId, domain, files, batchModel);
+
+    // Build JSONL
+    const jsonl = BatchTranslation.createBatchJsonl(job.files, TRANSLATION_SYSTEM_MESSAGE, batchModel);
+    if (!jsonl || jsonl.trim().length === 0) {
+      return res.status(400).json({ error: 'No valid files to translate' });
+    }
+
+    console.log(`📦 Batch JSONL created: ${jsonl.split('\n').length} lines, ${jsonl.length} bytes`);
+
+    // Upload & start batch
+    const batchResult = await BatchTranslation.uploadAndStartBatch(jsonl);
+
+    // Update job with batch info
+    TranslationJobs.updateBatchStatus(job.id, {
+      batchApiId: batchResult.batchId,
+      inputFileId: batchResult.inputFileId,
+      status: batchResult.status,
+      requestCounts: batchResult.requestCounts,
+    });
+    TranslationJobs.updateJob(job.id, {
+      status: 'batch_submitted',
+      startedAt: Date.now(),
+      batchSubmittedAt: Date.now(),
+    });
+
+    // Mark all files as submitted
+    job.files.forEach((f, i) => {
+      if (f.status === 'batch_queued') {
+        TranslationJobs.updateFileStatus(job.id, f.path, f.lang, 'batch_submitted');
+      }
+    });
+
+    res.json({
+      success: true,
+      job: TranslationJobs.getJobSummary(job.id),
+      batchId: batchResult.batchId,
+      message: 'Batch submitted to OpenAI',
+    });
+  } catch (err) {
+    console.error('❌ Batch start failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get batch job status
+app.get("/translate-batch-status/:jobId", authMiddleware, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    console.log(`🔍 [batch-status] Checking job ${jobId}`);
+    const job = TranslationJobs.getJob(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    let batchStatus = null;
+    if (job.batchApiId && !['failed', 'completed', 'cancelled'].includes(job.status)) {
+      try {
+        batchStatus = await BatchTranslation.pollBatchStatus(job.batchApiId);
+        TranslationJobs.updateBatchStatus(jobId, {
+          status: batchStatus.status,
+          requestCounts: batchStatus.requestCounts,
+          outputFileId: batchStatus.outputFileId,
+          errorFileId: batchStatus.errorFileId,
+        });
+      } catch (e) {
+        console.error('Failed to poll batch status:', e.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      job: TranslationJobs.getJobSummary(jobId),
+      batchStatus,
+    });
+  } catch (err) {
+    console.error('❌ Batch status failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Download and apply batch results
+app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    console.log(`📥 [batch-results] Downloading results for job ${jobId}`);
+    const job = TranslationJobs.getJob(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    // If job already failed, return cached state without re-processing
+    if (job.status === 'failed') {
+      return res.json({
+        success: false,
+        allFailed: true,
+        error: job.error || 'Batch failed',
+        job: TranslationJobs.getJobSummary(jobId),
+      });
+    }
+
+    if (!job.outputFileId && job.batchApiId) {
+      // Fetch latest status
+      const status = await BatchTranslation.pollBatchStatus(job.batchApiId);
+      if (status.outputFileId) {
+        TranslationJobs.updateBatchStatus(jobId, {
+          status: status.status,
+          outputFileId: status.outputFileId,
+          errorFileId: status.errorFileId,
+        });
+        job.outputFileId = status.outputFileId;
+      }
+    }
+
+    if (!job.outputFileId) {
+      // Check if batch completed but all requests failed (no output, only error file)
+      if (job.batchApiStatus === 'completed' || (job.batchApiId && (await BatchTranslation.pollBatchStatus(job.batchApiId)).status === 'completed')) {
+        let errorMessage = 'All batch requests failed';
+        if (job.errorFileId) {
+          const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId);
+          if (errors.length > 0) {
+            const firstErr = errors[0];
+            errorMessage = firstErr?.response?.body?.error?.message || firstErr?.error?.message || errorMessage;
+            console.log(`❌ [batch-results] All ${errors.length} requests failed. First error: ${errorMessage}`);
+          }
+        }
+        // Mark all files as failed
+        job.files.forEach(f => {
+          if (['batch_submitted', 'batch_queued', 'pending'].includes(f.status)) {
+            f.status = 'failed';
+            f.error = errorMessage;
+          }
+        });
+        TranslationJobs.updateJob(jobId, { status: 'failed', error: errorMessage, completedAt: Date.now(), files: job.files });
+        return res.json({
+          success: false,
+          allFailed: true,
+          error: errorMessage,
+          job: TranslationJobs.getJobSummary(jobId),
+        });
+      }
+      return res.status(400).json({ error: 'Batch not yet completed — no output file available' });
+    }
+
+    // Download results
+    const results = await BatchTranslation.downloadBatchResults(job.outputFileId);
+    console.log(`📥 Downloaded ${results.length} batch results for job ${jobId}`);
+
+    // Validate each result
+    let validOk = 0, validFail = 0;
+    const processedResults = results.map(r => {
+      const file = job.files[r.fileIndex];
+      if (!r.translated || r.error) {
+        return { ...r, validationErrors: null };
+      }
+      if (file && file.content) {
+        const meta = `(${file.path}→${file.lang})`;
+        const validation = BatchTranslation.validateTranslation(file.content, r.translated, meta);
+        if (validation.valid) validOk++; else validFail++;
+        return {
+          ...r,
+          validationErrors: validation.valid ? null : validation.errors,
+        };
+      }
+      return { ...r, validationErrors: null };
+    });
+    console.log(`✅ [batch-results] Validation: ${validOk} passed, ${validFail} failed`);
+
+    // Apply to job
+    const stats = TranslationJobs.applyBatchResults(jobId, processedResults);
+
+    // Download errors if any
+    if (job.errorFileId) {
+      const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId);
+      if (errors.length > 0) {
+        console.log(`⚠️ Batch ${jobId} had ${errors.length} error entries`);
+      }
+    }
+
+    res.json({
+      success: true,
+      job: TranslationJobs.getJobSummary(jobId),
+      stats,
+    });
+  } catch (err) {
+    console.error('❌ Batch results download failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Retry failed/validation-failed files as new batch
+app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const job = TranslationJobs.getJob(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    if ((job.retriesLeft ?? 0) <= 0) {
+      return res.status(400).json({ error: 'No retries left. Review failed files manually.' });
+    }
+
+    const retryFiles = TranslationJobs.getRetryFiles(jobId);
+    if (retryFiles.length === 0) {
+      return res.json({ success: true, message: 'No files need retry' });
+    }
+
+    // Reset files for retry
+    const resetCount = TranslationJobs.resetFilesForRetry(jobId);
+
+    // Build JSONL with only the retry files
+    const filesToRetry = job.files.filter(f => f.status === 'batch_queued');
+    const jsonl = BatchTranslation.createBatchJsonl(
+      filesToRetry.map((f, i) => ({ ...f, _origIndex: job.files.indexOf(f) })),
+      TRANSLATION_SYSTEM_MESSAGE,
+      job.batchModel || 'gpt-4o-mini'
+    );
+
+    // We need a new JSONL that maps back to original indices
+    // Rebuild with correct indices
+    const retryJsonlLines = [];
+    for (let i = 0; i < job.files.length; i++) {
+      const f = job.files[i];
+      if (f.status !== 'batch_queued') continue;
+      retryJsonlLines.push(JSON.stringify({
+        custom_id: `idx::${i}`,
+        method: 'POST',
+        url: '/v1/chat/completions',
+        body: {
+          model: job.batchModel || 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
+            { role: 'user', content: f.content },
+          ],
+          max_tokens: 16000,
+          temperature: 0.3,
+        },
+      }));
+    }
+    const retryJsonl = retryJsonlLines.join('\n');
+
+    // Upload & start new batch
+    const batchResult = await BatchTranslation.uploadAndStartBatch(retryJsonl);
+
+    TranslationJobs.updateBatchStatus(jobId, {
+      batchApiId: batchResult.batchId,
+      inputFileId: batchResult.inputFileId,
+      status: batchResult.status,
+      requestCounts: batchResult.requestCounts,
+    });
+    TranslationJobs.updateJob(jobId, {
+      status: 'batch_submitted',
+      batchSubmittedAt: Date.now(),
+    });
+
+    // Mark retry files as submitted
+    job.files.forEach(f => {
+      if (f.status === 'batch_queued') {
+        f.status = 'batch_submitted';
+      }
+    });
+    TranslationJobs.updateJob(jobId, { files: job.files });
+
+    res.json({
+      success: true,
+      retried: resetCount,
+      retriesLeft: job.retriesLeft,
+      batchId: batchResult.batchId,
+      job: TranslationJobs.getJobSummary(jobId),
+    });
+  } catch (err) {
+    console.error('❌ Batch retry failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Cancel a batch job
+app.post("/translate-batch-cancel/:jobId", authMiddleware, async (req, res) => {
+  try {
+    const { jobId } = req.params;
+    console.log(`🛑 [batch-cancel] Cancelling job ${jobId}`);
+    const job = TranslationJobs.getJob(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    if (job.batchApiId) {
+      try {
+        await BatchTranslation.cancelBatch(job.batchApiId);
+      } catch (e) {
+        console.log('Batch cancel API error (may already be done):', e.message);
+      }
+    }
+
+    TranslationJobs.updateJob(jobId, { status: 'stopped' });
+    TranslationJobs.updateBatchStatus(jobId, { status: 'cancelled' });
+
+    res.json({
+      success: true,
+      job: TranslationJobs.getJobSummary(jobId),
+    });
+  } catch (err) {
+    console.error('❌ Batch cancel failed:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Get batch file content for download (reuse same pattern as realtime)
+app.get("/translate-batch-download/:jobId/:fileIndex", authMiddleware, (req, res) => {
+  try {
+    const { jobId, fileIndex } = req.params;
+    const job = TranslationJobs.getJob(jobId);
+    if (!job) return res.status(404).json({ error: 'Job not found' });
+
+    const file = job.files[parseInt(fileIndex)];
+    if (!file) { console.warn(`⚠️ [batch-download] File index ${fileIndex} not found in job ${jobId}`); return res.status(404).json({ error: 'File not found' }); }
+    if (!file.translated) { console.warn(`⚠️ [batch-download] File ${file.path}→${file.lang} not yet translated`); return res.status(400).json({ error: 'File not yet translated' }); }
+    console.log(`📥 [batch-download] Serving ${file.path}→${file.lang} (${file.translated.length} chars)`);
+
+    res.json({
+      success: true,
+      content: file.translated,
+      path: file.path,
+      lang: file.lang,
+      status: file.status,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// ─── Background Batch Poller ────────────────────────────────────
+
+async function pollActiveBatches() {
+  const activeJobs = TranslationJobs.getActiveBatchJobs();
+  if (activeJobs.length === 0) return;
+
+  for (const job of activeJobs) {
+    if (!job.batchApiId) continue;
+
+    try {
+      const status = await BatchTranslation.pollBatchStatus(job.batchApiId);
+
+      TranslationJobs.updateBatchStatus(job.id, {
+        status: status.status,
+        requestCounts: status.requestCounts,
+        outputFileId: status.outputFileId,
+        errorFileId: status.errorFileId,
+      });
+
+      console.log(`🔄 Batch poll ${job.id}: ${status.status} (${status.requestCounts?.completed || 0}/${status.requestCounts?.total || '?'})`);
+
+      // Handle completed batch with ALL requests failed (no output file)
+      if (status.status === 'completed' && !status.outputFileId) {
+        let errorMessage = 'All batch requests failed';
+        if (status.errorFileId) {
+          try {
+            const errors = await BatchTranslation.downloadBatchErrors(status.errorFileId);
+            if (errors.length > 0) {
+              errorMessage = errors[0]?.response?.body?.error?.message || errors[0]?.error?.message || errorMessage;
+            }
+          } catch(e) { console.error('Failed to download error file:', e.message); }
+        }
+        console.log(`❌ Batch ${job.id} completed with ALL failures: ${errorMessage}`);
+        TranslationJobs.updateJob(job.id, {
+          status: 'failed',
+          error: errorMessage,
+          completedAt: Date.now(),
+        });
+        job.files.forEach(f => {
+          if (['batch_submitted', 'batch_queued'].includes(f.status)) {
+            f.status = 'failed';
+            f.error = errorMessage;
+          }
+        });
+        TranslationJobs.updateJob(job.id, { files: job.files });
+        continue;
+      }
+
+      // Auto-download results when batch completes
+      if (status.status === 'completed' && status.outputFileId) {
+        console.log(`📥 Auto-downloading batch results for job ${job.id}`);
+
+        const results = await BatchTranslation.downloadBatchResults(status.outputFileId);
+
+        // Validate each
+        const processedResults = results.map(r => {
+          const file = job.files[r.fileIndex];
+          if (!r.translated || r.error) return { ...r, validationErrors: null };
+          if (file?.content) {
+            const meta = `(${file.path}→${file.lang})`;
+            const v = BatchTranslation.validateTranslation(file.content, r.translated, meta);
+            return { ...r, validationErrors: v.valid ? null : v.errors };
+          }
+          return { ...r, validationErrors: null };
+        });
+
+        const stats = TranslationJobs.applyBatchResults(job.id, processedResults);
+        console.log(`✅ Batch ${job.id} results applied: ${stats.completed} ok, ${stats.failed} failed, ${stats.validationFailed} validation errors`);
+
+        // Auto-retry if there are failed files and retries left
+        if ((stats.failed > 0 || stats.validationFailed > 0) && (job.retriesLeft ?? 0) > 0) {
+          console.log(`🔄 Auto-retrying ${stats.failed + stats.validationFailed} files for job ${job.id}`);
+          const resetCount = TranslationJobs.resetFilesForRetry(job.id);
+          if (resetCount > 0) {
+            const updatedJob = TranslationJobs.getJob(job.id);
+            const retryLines = [];
+            for (let i = 0; i < updatedJob.files.length; i++) {
+              const f = updatedJob.files[i];
+              if (f.status !== 'batch_queued') continue;
+              retryLines.push(JSON.stringify({
+                custom_id: `idx::${i}`,
+                method: 'POST',
+                url: '/v1/chat/completions',
+                body: {
+                  model: updatedJob.batchModel || 'gpt-4o-mini',
+                  messages: [
+                    { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
+                    { role: 'user', content: f.content },
+                  ],
+                  max_tokens: 16000,
+                  temperature: 0.3,
+                },
+              }));
+            }
+            if (retryLines.length > 0) {
+              const batchResult = await BatchTranslation.uploadAndStartBatch(retryLines.join('\n'));
+              TranslationJobs.updateBatchStatus(updatedJob.id, {
+                batchApiId: batchResult.batchId,
+                inputFileId: batchResult.inputFileId,
+                status: batchResult.status,
+                requestCounts: batchResult.requestCounts,
+              });
+              TranslationJobs.updateJob(updatedJob.id, {
+                status: 'batch_submitted',
+                batchSubmittedAt: Date.now(),
+              });
+              updatedJob.files.forEach(f => {
+                if (f.status === 'batch_queued') f.status = 'batch_submitted';
+              });
+              TranslationJobs.updateJob(updatedJob.id, { files: updatedJob.files });
+              console.log(`🚀 Retry batch submitted: ${batchResult.batchId} (${retryLines.length} files)`);
+            }
+          }
+        }
+      }
+
+      // Handle failed/expired batches
+      if (['failed', 'expired', 'cancelled'].includes(status.status)) {
+        TranslationJobs.updateJob(job.id, {
+          status: 'failed',
+          error: `Batch ${status.status}: ${status.errors?.data?.[0]?.message || 'unknown error'}`,
+          completedAt: Date.now(),
+        });
+        // Mark submitted files as failed
+        job.files.forEach(f => {
+          if (f.status === 'batch_submitted') {
+            f.status = 'failed';
+            f.error = `Batch ${status.status}`;
+          }
+        });
+        TranslationJobs.updateJob(job.id, { files: job.files });
+      }
+    } catch (err) {
+      console.error(`❌ Batch poll error for job ${job.id}:`, err.message);
+    }
+  }
+}
+
+// Poll every 30 seconds
+setInterval(pollActiveBatches, 30 * 1000);
 
 app.listen(process.env.PORT, () =>
   console.log(`✅ OpenAI API running on port ${process.env.PORT}`)

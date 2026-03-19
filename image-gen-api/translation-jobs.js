@@ -131,7 +131,7 @@ export function getJob(jobId) {
 export function getActiveJobForSite(siteId) {
     return Object.values(jobsCache).find(job => 
         job.siteId === siteId && 
-        (job.status === 'pending' || job.status === 'processing')
+        (job.status === 'pending' || job.status === 'processing' || job.status === 'batch_submitted')
     ) || null;
 }
 
@@ -139,11 +139,15 @@ export function getActiveJobForSite(siteId) {
 export function updateJob(jobId, updates) {
     if (!jobsCache[jobId]) return null;
     
+    const prevStatus = jobsCache[jobId].status;
     jobsCache[jobId] = {
         ...jobsCache[jobId],
         ...updates,
         updatedAt: Date.now(),
     };
+    if (updates.status && updates.status !== prevStatus) {
+        console.log(`🔄 Job ${jobId}: ${prevStatus} → ${updates.status}`);
+    }
     saveJobs();
     return jobsCache[jobId];
 }
@@ -164,7 +168,7 @@ export function updateFileStatus(jobId, filePath, lang, status, extra = {}) {
     
     // Recalculate stats
     job.completedFiles = job.files.filter(f => f.status === 'completed' || f.status === 'skipped').length;
-    job.failedFiles = job.files.filter(f => f.status === 'failed').length;
+    job.failedFiles = job.files.filter(f => f.status === 'failed' || f.status === 'validation_failed').length;
     job.updatedAt = Date.now();
     
     // Check if job is complete
@@ -272,6 +276,7 @@ export function getJobSummary(jobId) {
         id: job.id,
         siteId: job.siteId,
         domain: job.domain,
+        mode: job.mode || 'realtime',
         status: job.status,
         createdAt: job.createdAt,
         updatedAt: job.updatedAt,
@@ -288,6 +293,14 @@ export function getJobSummary(jobId) {
         currentBatch: job.currentBatch,
         totalBatches: job.totalBatches,
         error: job.error,
+        // Batch API fields
+        batchApiId: job.batchApiId || null,
+        batchApiStatus: job.batchApiStatus || null,
+        batchRequestCounts: job.batchRequestCounts || null,
+        batchModel: job.batchModel || null,
+        retriesLeft: job.retriesLeft ?? null,
+        validationFailedFiles: job.mode === 'batch'
+            ? job.files.filter(f => f.status === 'validation_failed').length : 0,
         files: job.files.map(f => ({
             path: f.path,
             lang: f.lang,
@@ -366,6 +379,179 @@ export function getDownloadStats(jobId) {
         downloaded: downloaded.length,
         pendingDownload: pending.length,
     };
+}
+
+// ─── Batch API Job Functions ───────────────────────────────────
+
+// Create a batch API job (all files must have content upfront)
+export function createBatchJob(siteId, domain, files, model = 'gpt-4o-mini') {
+    const jobId = generateJobId();
+    
+    const job = {
+        id: jobId,
+        siteId,
+        domain,
+        mode: 'batch', // 'batch' vs 'realtime'
+        status: 'pending',
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        startedAt: null,
+        completedAt: null,
+        totalFiles: files.length,
+        completedFiles: 0,
+        failedFiles: 0,
+        currentBatch: 0,
+        batchSize: files.length,
+        totalBatches: 1,
+        // Batch API specific
+        batchApiId: null,
+        batchApiStatus: null,
+        batchRequestCounts: null,
+        batchModel: model,
+        inputFileId: null,
+        outputFileId: null,
+        errorFileId: null,
+        batchSubmittedAt: null,
+        batchCompletedAt: null,
+        retriesLeft: MAX_BATCH_RETRIES,
+        files: files.map(f => ({
+            path: f.path,
+            lang: f.lang,
+            content: f.content || null,
+            status: f.content ? 'batch_queued' : 'queued',
+            error: null,
+            translated: null,
+            downloaded: false,
+            validationErrors: null,
+        })),
+        error: null,
+    };
+    
+    jobsCache[jobId] = job;
+    saveJobs();
+    
+    console.log(`📝 Created BATCH job ${jobId} for ${domain} with ${files.length} files (model: ${model})`);
+    return job;
+}
+
+const MAX_BATCH_RETRIES = 2;
+
+// Get all active batch jobs (for polling)
+export function getActiveBatchJobs() {
+    return Object.values(jobsCache).filter(job =>
+        job.mode === 'batch' &&
+        ['pending', 'processing', 'batch_submitted'].includes(job.status)
+    );
+}
+
+// Update batch API status on a job
+export function updateBatchStatus(jobId, batchInfo) {
+    const job = jobsCache[jobId];
+    if (!job) return null;
+    
+    const prevStatus = job.batchApiStatus;
+    if (batchInfo.batchApiId) job.batchApiId = batchInfo.batchApiId;
+    if (batchInfo.status) job.batchApiStatus = batchInfo.status;
+    if (batchInfo.requestCounts) job.batchRequestCounts = batchInfo.requestCounts;
+    if (batchInfo.outputFileId) job.outputFileId = batchInfo.outputFileId;
+    if (batchInfo.errorFileId) job.errorFileId = batchInfo.errorFileId;
+    if (batchInfo.inputFileId) job.inputFileId = batchInfo.inputFileId;
+    job.updatedAt = Date.now();
+    
+    if (batchInfo.status && batchInfo.status !== prevStatus) {
+        console.log(`📦 [updateBatchStatus] Job ${jobId}: batch ${prevStatus} → ${batchInfo.status}`);
+    }
+    saveJobs();
+    return job;
+}
+
+// Apply batch results to job files
+export function applyBatchResults(jobId, results) {
+    const job = jobsCache[jobId];
+    if (!job) return null;
+    
+    let completed = 0, failed = 0, validationFailed = 0;
+    
+    for (const r of results) {
+        const file = job.files[r.fileIndex];
+        if (!file) continue;
+        
+        if (r.error) {
+            file.status = 'failed';
+            file.error = r.error;
+            failed++;
+        } else if (r.validationErrors && r.validationErrors.length > 0) {
+            file.status = 'validation_failed';
+            file.error = r.validationErrors.join('; ');
+            file.validationErrors = r.validationErrors;
+            file.translated = r.translated; // Keep it for potential manual use
+            validationFailed++;
+        } else {
+            file.status = 'completed';
+            file.translated = r.translated;
+            file.error = null;
+            completed++;
+        }
+    }
+    
+    job.completedFiles = job.files.filter(f => f.status === 'completed' || f.status === 'skipped').length;
+    job.failedFiles = job.files.filter(f => f.status === 'failed' || f.status === 'validation_failed').length;
+    job.updatedAt = Date.now();
+    
+    // Check if done
+    const pending = job.files.filter(f =>
+        ['batch_queued', 'batch_submitted', 'pending', 'processing'].includes(f.status)
+    ).length;
+    if (pending === 0) {
+        job.status = (failed > 0 || validationFailed > 0) ? 'completed_with_errors' : 'completed';
+        job.completedAt = Date.now();
+        job.batchCompletedAt = Date.now();
+    }
+    
+    saveJobs();
+    console.log(`📊 Batch results applied to job ${jobId}: ${completed} ok, ${failed} failed, ${validationFailed} validation errors`);
+    return { completed, failed, validationFailed };
+}
+
+// Get files that need retry (failed + validation_failed)
+export function getRetryFiles(jobId) {
+    const job = jobsCache[jobId];
+    if (!job) return [];
+    
+    return job.files
+        .map((f, i) => ({ ...f, fileIndex: i }))
+        .filter(f => f.status === 'failed' || f.status === 'validation_failed');
+}
+
+// Reset retry files to batch_queued for re-submission
+export function resetFilesForRetry(jobId) {
+    const job = jobsCache[jobId];
+    if (!job) return 0;
+    
+    let reset = 0;
+    job.files.forEach(f => {
+        if (f.status === 'failed' || f.status === 'validation_failed') {
+            f.status = 'batch_queued';
+            f.error = null;
+            f.translated = null;
+            f.validationErrors = null;
+            reset++;
+        }
+    });
+    
+    if (reset > 0) {
+        job.status = 'processing';
+        job.retriesLeft = Math.max(0, (job.retriesLeft ?? MAX_BATCH_RETRIES) - 1);
+        job.batchApiId = null;
+        job.batchApiStatus = null;
+        job.outputFileId = null;
+        job.errorFileId = null;
+        job.updatedAt = Date.now();
+        saveJobs();
+    }
+    
+    console.log(`🔄 Reset ${reset} files for retry in job ${jobId} (retries left: ${job.retriesLeft})`);
+    return reset;
 }
 
 // Initialize on load
