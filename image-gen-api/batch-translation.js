@@ -3,7 +3,11 @@ import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
 
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+let _openai = null;
+function getOpenAI() {
+  if (!_openai) _openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+  return _openai;
+}
 
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_RETRIES = 2;
@@ -53,14 +57,14 @@ export async function uploadAndStartBatch(jsonlContent) {
   const blob = new Blob([jsonlContent], { type: 'application/jsonl' });
   const file = new File([blob], `translations_${Date.now()}.jsonl`, { type: 'application/jsonl' });
 
-  const uploaded = await openai.files.create({
+  const uploaded = await getOpenAI().files.create({
     file,
     purpose: 'batch',
   });
   console.log(`📤 Uploaded JSONL file: ${uploaded.id} (${jsonlContent.length} bytes)`);
 
   // Create batch
-  const batch = await openai.batches.create({
+  const batch = await getOpenAI().batches.create({
     input_file_id: uploaded.id,
     endpoint: '/v1/chat/completions',
     completion_window: '24h',
@@ -85,7 +89,7 @@ export async function uploadAndStartBatch(jsonlContent) {
  * Check batch status. Returns full batch object with request_counts.
  */
 export async function pollBatchStatus(batchId) {
-  const batch = await openai.batches.retrieve(batchId);
+  const batch = await getOpenAI().batches.retrieve(batchId);
   const rc = batch.request_counts || {};
   console.log(`🔍 [pollBatchStatus] ${batchId}: ${batch.status} — completed: ${rc.completed||0}/${rc.total||0}, failed: ${rc.failed||0}`);
   return {
@@ -110,7 +114,7 @@ export async function pollBatchStatus(batchId) {
  */
 export async function downloadBatchResults(outputFileId) {
   console.log(`📥 [downloadBatchResults] Downloading output file: ${outputFileId}`);
-  const response = await openai.files.content(outputFileId);
+  const response = await getOpenAI().files.content(outputFileId);
   const text = await response.text();
   const lines = text.trim().split('\n');
   console.log(`📥 [downloadBatchResults] Downloaded ${lines.length} result lines (${text.length} bytes)`);
@@ -160,7 +164,7 @@ export async function downloadBatchResults(outputFileId) {
 export async function downloadBatchErrors(errorFileId) {
   if (!errorFileId) return [];
   try {
-    const response = await openai.files.content(errorFileId);
+    const response = await getOpenAI().files.content(errorFileId);
     const text = await response.text();
     return text.trim().split('\n').map(line => {
       try { return JSON.parse(line); } catch { return { raw: line }; }
@@ -263,7 +267,7 @@ function countRegex(str, regex) {
 
 export async function cancelBatch(batchId) {
   try {
-    const batch = await openai.batches.cancel(batchId);
+    const batch = await getOpenAI().batches.cancel(batchId);
     console.log(`🛑 Batch ${batchId} cancelled`);
     return batch;
   } catch (e) {
