@@ -24,7 +24,22 @@ const UNSPLASH_ENABLED = typeof UNSPLASH_ENABLE_FLAG === 'string'
 const CITYPHOTO_CACHE_TTL_MS = Number(process.env.GOOGLE_CITYPHOTO_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 30);
 const REQUEST_CACHE_TTL_MS = Number(process.env.REQUEST_CACHE_TTL_MS || 1000 * 60 * 60 * 24 * 30);
 const REQUEST_CACHE_DIR = process.env.REQUEST_CACHE_DIR || path.join(process.cwd(), "cache", "requests");
+const GOOGLE_PLACE_PHOTO_MAX_DIMENSION = 1600;
+const GOOGLE_CITYPHOTO_STRATEGY_VERSION = "v4";
+const GOOGLE_CITYPHOTO_DEFAULT_LIMIT = Number(process.env.GOOGLE_CITYPHOTO_DEFAULT_LIMIT || 100);
+const GOOGLE_CITYPHOTO_MAX_LIMIT = Number(process.env.GOOGLE_CITYPHOTO_MAX_LIMIT || 120);
+const GOOGLE_CITYPHOTO_MIN_WIDTH_DEFAULT = 1600;
+const GOOGLE_CITYPHOTO_MIN_HEIGHT_DEFAULT = 1200;
+const GOOGLE_CITYPHOTO_RADIUS_METERS = Number(process.env.GOOGLE_CITYPHOTO_RADIUS_METERS || 50000);
+const GOOGLE_CITYPHOTO_PAGE_DELAY_MS = Number(process.env.GOOGLE_CITYPHOTO_PAGE_DELAY_MS || 2500);
+const GOOGLE_CITYPHOTO_DISTANCE_TOLERANCE_MULTIPLIER = Number(process.env.GOOGLE_CITYPHOTO_DISTANCE_TOLERANCE_MULTIPLIER || 1.4);
+const EXTERNAL_SEARCH_MAX_PAGES = Number(process.env.EXTERNAL_SEARCH_MAX_PAGES || 3);
 const cityPhotoCache = new Map();
+const STRICT_SEARCH_STOPWORDS = new Set([
+  "the", "and", "for", "with", "from", "into", "near", "city", "town", "country",
+  "state", "region", "area", "view", "views", "photo", "photos", "image", "images",
+  "in", "of", "a", "an", "de", "la", "el", "del", "da", "di"
+]);
 
 function stableStringify(value) {
   if (value === null || typeof value !== "object") {
@@ -106,12 +121,62 @@ function setRequestCache(namespace, payload, data) {
   }
 }
 
+function clearRequestCache(namespace, predicate = null) {
+  const folder = path.join(REQUEST_CACHE_DIR, namespace);
+  if (!fs.existsSync(folder)) {
+    return 0;
+  }
+
+  let removed = 0;
+
+  for (const filename of fs.readdirSync(folder)) {
+    const filePath = path.join(folder, filename);
+
+    try {
+      if (!filename.endsWith(".json")) {
+        continue;
+      }
+
+      if (predicate) {
+        const raw = fs.readFileSync(filePath, "utf8");
+        const parsed = JSON.parse(raw);
+        const request = parsed?.request ?? null;
+
+        if (!predicate(request)) {
+          continue;
+        }
+      }
+
+      fs.rmSync(filePath, { force: true });
+      removed += 1;
+    } catch (err) {
+      console.warn(`Cache clear failed for ${namespace}/${filename}:`, err.message);
+    }
+  }
+
+  return removed;
+}
+
 function normalizeCityKey(city) {
   return String(city || '').trim().toLowerCase().replace(/\s+/g, ' ');
 }
 
-function getCityPhotoCache(city, limit, maxwidth, maxheight) {
-  const key = `${normalizeCityKey(city)}|${limit}|${maxwidth}|${maxheight}`;
+function normalizeSearchText(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/&/g, " and ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function buildCityPhotoCacheKey(payload) {
+  return stableStringify(payload);
+}
+
+function getCityPhotoCache(payload) {
+  const key = buildCityPhotoCacheKey(payload);
   const cached = cityPhotoCache.get(key);
   if (!cached) return null;
   if (Date.now() - cached.createdAt > CITYPHOTO_CACHE_TTL_MS) {
@@ -121,21 +186,393 @@ function getCityPhotoCache(city, limit, maxwidth, maxheight) {
   return { key, data: cached.data };
 }
 
-function setCityPhotoCache(city, limit, maxwidth, maxheight, data) {
-  const key = `${normalizeCityKey(city)}|${limit}|${maxwidth}|${maxheight}`;
+function setCityPhotoCache(payload, data) {
+  const key = buildCityPhotoCacheKey(payload);
   cityPhotoCache.set(key, { createdAt: Date.now(), data });
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function normalizeOptionalKey(value) {
+  const normalized = normalizeCityKey(value);
+  return normalized || null;
+}
+
+function tokenizeStrictSearch(value) {
+  return normalizeSearchText(value)
+    .split(/\s+/)
+    .filter((token) => token.length >= 3 && !STRICT_SEARCH_STOPWORDS.has(token));
+}
+
+function buildExternalSearchContext(req) {
+  const location = String(req.query.location || req.query.city || "").trim();
+  const term = String(req.query.term || "").trim();
+  const searchQuery = [location, term].filter(Boolean).join(" ").trim() || location || term;
+  const primaryLocation = String(location.split(",")[0] || location).trim();
+  const strict = String(req.query.strict ?? "true").toLowerCase() !== "false";
+
+  return {
+    location,
+    term,
+    searchQuery,
+    strict,
+    normalizedLocation: normalizeSearchText(location),
+    normalizedPrimaryLocation: normalizeSearchText(primaryLocation),
+    primaryLocationTokens: tokenizeStrictSearch(primaryLocation),
+    normalizedTerm: normalizeSearchText(term),
+    termTokens: tokenizeStrictSearch(term),
+  };
+}
+
+function buildStrictMetadataText(parts) {
+  return normalizeSearchText(parts.filter(Boolean).join(" "));
+}
+
+function metadataMatchesStrictContext(metadataText, context) {
+  if (!context.strict) {
+    return true;
+  }
+
+  const haystack = normalizeSearchText(metadataText);
+  if (!haystack) {
+    return false;
+  }
+
+  let locationMatch = true;
+  if (context.normalizedPrimaryLocation || context.primaryLocationTokens.length > 0) {
+    locationMatch =
+      (context.normalizedPrimaryLocation && haystack.includes(context.normalizedPrimaryLocation)) ||
+      context.primaryLocationTokens.every((token) => haystack.includes(token));
+  }
+
+  let termMatch = true;
+  if (context.normalizedTerm || context.termTokens.length > 0) {
+    termMatch =
+      (context.normalizedTerm && haystack.includes(context.normalizedTerm)) ||
+      context.termTokens.every((token) => haystack.includes(token));
+  }
+
+  return locationMatch && termMatch;
+}
+
+function dedupeByKey(items, keyBuilder) {
+  const seen = new Set();
+  const result = [];
+
+  for (const item of items) {
+    const key = String(keyBuilder(item) || "").trim();
+    if (!key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    result.push(item);
+  }
+
+  return result;
+}
+
+function normalizeCountryFromAddress(formattedAddress) {
+  const parts = String(formattedAddress || "")
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+
+  return parts.length > 1 ? parts[parts.length - 1] : "";
+}
+
+function clampLegacyPhotoDimension(value, fallback) {
+  const numeric = Number(value || fallback);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+
+  return Math.max(1, Math.min(Math.round(numeric), GOOGLE_PLACE_PHOTO_MAX_DIMENSION));
+}
+
+function normalizePositiveInt(value, fallback) {
+  const numeric = Number(value || fallback);
+  if (!Number.isFinite(numeric) || numeric <= 0) {
+    return fallback;
+  }
+
+  return Math.round(numeric);
+}
+
+function normalizeLimit(value, fallback) {
+  return Math.min(normalizePositiveInt(value, fallback), GOOGLE_CITYPHOTO_MAX_LIMIT);
+}
+
+function isHighResolutionPhoto(photo, minWidth, minHeight) {
+  const width = Number(photo?.width || 0);
+  const height = Number(photo?.height || 0);
+  const longestSide = Math.max(width, height);
+  const shortestSide = Math.min(width, height);
+
+  return Boolean(photo?.photo_reference) && longestSide >= minWidth && shortestSide >= minHeight;
+}
+
+function buildLegacyPhotoUrl(photoReference, maxwidth, maxheight) {
+  const params = new URLSearchParams({
+    maxwidth: String(maxwidth),
+    maxheight: String(maxheight),
+    photo_reference: String(photoReference),
+    key: GOOGLE_API_KEY,
+  });
+
+  return `https://maps.googleapis.com/maps/api/place/photo?${params.toString()}`;
+}
+
+function createPhotoRecord(photo, place, sourceQuery, maxwidth, maxheight) {
+  return {
+    width: Number(photo?.width || 0),
+    height: Number(photo?.height || 0),
+    photo_reference: String(photo?.photo_reference || ""),
+    place_id: place?.place_id || null,
+    place_name: place?.name || null,
+    source_query: sourceQuery,
+    downloadUrl: buildLegacyPhotoUrl(photo.photo_reference, maxwidth, maxheight),
+  };
+}
+
+function scorePhoto(record) {
+  const width = Number(record?.width || 0);
+  const height = Number(record?.height || 0);
+  const area = width * height;
+  const isLandscape = width >= height ? 1 : 0;
+
+  return (area * 10) + isLandscape;
+}
+
+function degreesToRadians(value) {
+  return (value * Math.PI) / 180;
+}
+
+function distanceBetweenMeters(lat1, lng1, lat2, lng2) {
+  const earthRadius = 6371000;
+  const dLat = degreesToRadians(lat2 - lat1);
+  const dLng = degreesToRadians(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(degreesToRadians(lat1)) *
+      Math.cos(degreesToRadians(lat2)) *
+      Math.sin(dLng / 2) ** 2;
+
+  return 2 * earthRadius * Math.asin(Math.sqrt(a));
+}
+
+function isPlaceRelevantToLocation(place, locationContext) {
+  const placeLat = Number(place?.geometry?.location?.lat);
+  const placeLng = Number(place?.geometry?.location?.lng);
+  const centerLat = Number(locationContext?.lat);
+  const centerLng = Number(locationContext?.lng);
+
+  if (!Number.isFinite(placeLat) || !Number.isFinite(placeLng) || !Number.isFinite(centerLat) || !Number.isFinite(centerLng)) {
+    return true;
+  }
+
+  const distanceMeters = distanceBetweenMeters(centerLat, centerLng, placeLat, placeLng);
+  return distanceMeters <= GOOGLE_CITYPHOTO_RADIUS_METERS * GOOGLE_CITYPHOTO_DISTANCE_TOLERANCE_MULTIPLIER;
+}
+
+function addHighResolutionPhotos(target, seenPhotoReferences, photos, place, sourceQuery, options) {
+  const { minWidth, minHeight, maxwidth, maxheight, limit } = options;
+
+  for (const photo of photos || []) {
+    if (target.length >= limit) {
+      break;
+    }
+
+    if (!isHighResolutionPhoto(photo, minWidth, minHeight)) {
+      continue;
+    }
+
+    const photoReference = String(photo.photo_reference || "").trim();
+    if (!photoReference || seenPhotoReferences.has(photoReference)) {
+      continue;
+    }
+
+    seenPhotoReferences.add(photoReference);
+    target.push(createPhotoRecord(photo, place, sourceQuery, maxwidth, maxheight));
+  }
+}
+
+async function resolveLocationContext(query) {
+  const response = await axios.get("https://maps.googleapis.com/maps/api/place/findplacefromtext/json", {
+    params: {
+      input: query,
+      inputtype: "textquery",
+      fields: "place_id,name,geometry,formatted_address",
+      key: GOOGLE_API_KEY,
+    },
+  });
+
+  const candidate = response.data.candidates?.[0] || null;
+  if (!candidate?.place_id) {
+    return null;
+  }
+
+  const country = normalizeCountryFromAddress(candidate.formatted_address);
+  const locationQuery = [candidate.name || query, country].filter(Boolean).join(", ");
+
+  return {
+    placeId: candidate.place_id,
+    placeName: candidate.name || query,
+    normalizedLocation: normalizeCityKey(locationQuery || query),
+    country,
+    formattedAddress: candidate.formatted_address || "",
+    locationQuery: locationQuery || query,
+    lat: candidate.geometry?.location?.lat ?? null,
+    lng: candidate.geometry?.location?.lng ?? null,
+  };
+}
+
+async function runTextSearch(query, locationContext) {
+  const cachePayload = {
+    query: normalizeCityKey(query),
+    base_location: locationContext?.normalizedLocation || null,
+    radius: GOOGLE_CITYPHOTO_RADIUS_METERS,
+    strategy: GOOGLE_CITYPHOTO_STRATEGY_VERSION,
+  };
+  const cached = getRequestCache("cityphoto-query", cachePayload, CITYPHOTO_CACHE_TTL_MS);
+  if (cached?.places) {
+    return cached.places;
+  }
+
+  const places = [];
+  let nextPageToken = null;
+  let page = 0;
+
+  while (page < 3) {
+    if (page > 0) {
+      await sleep(GOOGLE_CITYPHOTO_PAGE_DELAY_MS);
+    }
+
+    const params = nextPageToken
+      ? {
+          pagetoken: nextPageToken,
+          key: GOOGLE_API_KEY,
+        }
+      : {
+          query,
+          key: GOOGLE_API_KEY,
+          ...(locationContext?.lat != null && locationContext?.lng != null
+            ? {
+                location: `${locationContext.lat},${locationContext.lng}`,
+                radius: GOOGLE_CITYPHOTO_RADIUS_METERS,
+              }
+            : {}),
+        };
+
+    const response = await axios.get("https://maps.googleapis.com/maps/api/place/textsearch/json", { params });
+    const results = Array.isArray(response.data.results) ? response.data.results : [];
+
+    places.push(...results
+      .filter((place) => isPlaceRelevantToLocation(place, locationContext))
+      .map((place) => ({
+      ...place,
+      __sourceQuery: query,
+    })));
+
+    nextPageToken = response.data.next_page_token || null;
+    page += 1;
+
+    if (!nextPageToken) {
+      break;
+    }
+  }
+
+  setRequestCache("cityphoto-query", cachePayload, {
+    query,
+    places,
+  });
+
+  return places;
+}
+
+async function getPlaceDetails(placeId) {
+  const cachePayload = {
+    place_id: String(placeId || "").trim(),
+    strategy: GOOGLE_CITYPHOTO_STRATEGY_VERSION,
+  };
+  const cached = getRequestCache("cityphoto-details", cachePayload, CITYPHOTO_CACHE_TTL_MS);
+  if (cached?.result) {
+    return cached.result;
+  }
+
+  const response = await axios.get("https://maps.googleapis.com/maps/api/place/details/json", {
+    params: {
+      place_id: placeId,
+      fields: "photos,name,place_id",
+      key: GOOGLE_API_KEY,
+    },
+  });
+
+  const result = response.data.result || null;
+  setRequestCache("cityphoto-details", cachePayload, { result });
+
+  return result;
+}
+
+async function resolveGooglePhotoSignature(photoReference, maxwidth, maxheight) {
+  const normalizedReference = String(photoReference || "").trim();
+  if (!normalizedReference) {
+    return null;
+  }
+
+  const cachePayload = {
+    photo_reference: normalizedReference,
+    maxwidth,
+    maxheight,
+    strategy: GOOGLE_CITYPHOTO_STRATEGY_VERSION,
+  };
+  const cached = getRequestCache("cityphoto-signature", cachePayload, CITYPHOTO_CACHE_TTL_MS);
+  if (cached?.signature) {
+    return cached.signature;
+  }
+
+  const photoUrl = buildLegacyPhotoUrl(normalizedReference, maxwidth, maxheight);
+
+  try {
+    const response = await axios.get(photoUrl, {
+      responseType: "stream",
+      timeout: 20000,
+      maxRedirects: 5,
+      validateStatus: (status) => status >= 200 && status < 400,
+    });
+
+    const finalUrl =
+      response.request?.res?.responseUrl ||
+      response.request?.path ||
+      photoUrl;
+    const etag = String(response.headers?.etag || "").trim();
+    const contentLength = String(response.headers?.["content-length"] || "").trim();
+
+    response.data?.destroy?.();
+
+    const signature = [finalUrl, etag, contentLength].filter(Boolean).join("|") || photoUrl;
+    setRequestCache("cityphoto-signature", cachePayload, { signature });
+
+    return signature;
+  } catch (err) {
+    console.warn("Photo signature resolve failed:", err.message);
+    return `photo-reference:${normalizedReference}`;
+  }
 }
 
 
 app.get("/pexels-photo", async (req, res) => {
-  const city = req.query.city;
+  const search = buildExternalSearchContext(req);
   const limit = Number(req.query.limit || 10);
+  const candidateLimit = Math.min(Math.max(limit * 3, limit), 80);
   const maxwidth = Number(req.query.width || 1600);
   const previewWidth = Number(req.query.preview || 600);
   const mode = String(req.query.mode || "places").toLowerCase() === "places" ? "places" : "assets";
 
-  if (!city) {
-    return res.status(400).json({ error: "city parameter required" });
+  if (!search.searchQuery) {
+    return res.status(400).json({ error: "location or city parameter required" });
   }
 
   if (!PEXELS_API_KEY) {
@@ -143,31 +580,63 @@ app.get("/pexels-photo", async (req, res) => {
     return res.status(500).json({ error: "PEXELS_API_KEY not configured" });
   }
 
-  const cachePayload = { city: normalizeCityKey(city), limit, maxwidth, previewWidth, mode };
+  const cachePayload = {
+    location: normalizeOptionalKey(search.location),
+    term: normalizeOptionalKey(search.term),
+    query: normalizeCityKey(search.searchQuery),
+    strict: search.strict,
+    limit,
+    maxwidth,
+    previewWidth,
+    mode,
+  };
   const cached = getRequestCache("pexels-photo", cachePayload);
   if (cached) {
     return res.json({ ...cached, cached: true, cache_source: "file" });
   }
 
   try {
-    const response = await axios.get(
-      "https://api.pexels.com/v1/search",
-      {
+    const rawPhotos = [];
+    let page = 1;
+
+    while (page <= EXTERNAL_SEARCH_MAX_PAGES && rawPhotos.length < candidateLimit) {
+      const response = await axios.get(
+        "https://api.pexels.com/v1/search",
+        {
         params: {
-          query: city,
-          // Pexels limits per_page to a maximum of 80
-          per_page: Math.min(limit, 80),
+          query: search.searchQuery,
+          per_page: Math.min(candidateLimit, 80),
+          page,
           ...(mode === "places" ? { orientation: "landscape" } : {}),
         },
         headers: {
           Authorization: PEXELS_API_KEY,
         },
       }
-    );
+      );
 
-    const photos = response.data.photos.map((photo) => {
+      rawPhotos.push(...(response.data.photos || []));
+
+      if (!response.data.next_page || !Array.isArray(response.data.photos) || response.data.photos.length === 0) {
+        break;
+      }
+
+      page += 1;
+    }
+
+    const uniqueRawPhotos = dedupeByKey(rawPhotos, (photo) => photo.id);
+    const filteredRawPhotos = uniqueRawPhotos.filter((photo) => metadataMatchesStrictContext(
+      buildStrictMetadataText([
+        photo.alt,
+        photo.url,
+        photo.photographer,
+        photo.photographer_url,
+      ]),
+      search
+    ));
+
+    const photos = filteredRawPhotos.slice(0, limit).map((photo) => {
       const base = photo.src.original.split("?")[0];
-      // Preview: 600px width, 16:9 aspect = 600x338
       const previewH = Math.round(previewWidth / 16 * 9);
 
       return {
@@ -180,8 +649,13 @@ app.get("/pexels-photo", async (req, res) => {
     });
 
     const payload = {
-      city,
+      city: search.location || search.searchQuery,
+      term: search.term || null,
+      strict: search.strict,
+      search_query: search.searchQuery,
       count: photos.length,
+      candidates_before_filter: uniqueRawPhotos.length,
+      filtered_out: Math.max(0, uniqueRawPhotos.length - photos.length),
       photos,
       cached: false,
     };
@@ -197,13 +671,12 @@ app.get("/pexels-photo", async (req, res) => {
 });
 
 app.get("/pixabay-photo", async (req, res) => {
-  const city = req.query.city;
+  const search = buildExternalSearchContext(req);
   const limit = Number(req.query.limit || 10);
-  const page = Number(req.query.page || 1);
   const mode = String(req.query.mode || "places").toLowerCase() === "places" ? "places" : "assets";
 
-  if (!city) {
-    return res.status(400).json({ error: "city parameter required" });
+  if (!search.searchQuery) {
+    return res.status(400).json({ error: "location or city parameter required" });
   }
 
   if (!PIXABAY_API_KEY) {
@@ -211,27 +684,60 @@ app.get("/pixabay-photo", async (req, res) => {
     return res.status(500).json({ error: "PIXABAY_API_KEY not configured" });
   }
 
-  const cachePayload = { city: normalizeCityKey(city), limit, page, mode };
+  const cachePayload = {
+    location: normalizeOptionalKey(search.location),
+    term: normalizeOptionalKey(search.term),
+    query: normalizeCityKey(search.searchQuery),
+    strict: search.strict,
+    limit,
+    mode,
+  };
   const cached = getRequestCache("pixabay-photo", cachePayload);
   if (cached) {
     return res.json({ ...cached, cached: true, cache_source: "file" });
   }
 
   try {
-    const response = await axios.get("https://pixabay.com/api/", {
-      params: {
-        key: PIXABAY_API_KEY,
-        q: city,
-        image_type: "photo",
-        orientation: "horizontal",
-        ...(mode === "places" ? { category: "places" } : {}),
-        safesearch: true,
-        per_page: Math.max(3, Math.min(limit, 200)),
-        page,
-      },
-    });
+    const candidateLimit = Math.min(Math.max(limit * 3, limit), 200);
+    const rawPhotos = [];
+    let page = 1;
 
-    const photos = response.data.hits.map((hit) => {
+    while (page <= EXTERNAL_SEARCH_MAX_PAGES && rawPhotos.length < candidateLimit) {
+      const response = await axios.get("https://pixabay.com/api/", {
+        params: {
+          key: PIXABAY_API_KEY,
+          q: search.searchQuery,
+          image_type: "photo",
+          orientation: "horizontal",
+          ...(mode === "places" ? { category: "places" } : {}),
+          safesearch: true,
+          min_width: 1600,
+          min_height: 1200,
+          per_page: Math.max(3, Math.min(candidateLimit, 200)),
+          page,
+        },
+      });
+
+      rawPhotos.push(...(response.data.hits || []));
+
+      if (!Array.isArray(response.data.hits) || response.data.hits.length === 0) {
+        break;
+      }
+
+      page += 1;
+    }
+
+    const uniqueRawPhotos = dedupeByKey(rawPhotos, (photo) => photo.id);
+    const filteredRawPhotos = uniqueRawPhotos.filter((hit) => metadataMatchesStrictContext(
+      buildStrictMetadataText([
+        hit.tags,
+        hit.pageURL,
+        hit.user,
+      ]),
+      search
+    ));
+
+    const photos = filteredRawPhotos.slice(0, limit).map((hit) => {
       return {
         id: hit.id,
         user: hit.user,
@@ -247,10 +753,14 @@ app.get("/pixabay-photo", async (req, res) => {
     });
 
     const payload = {
-      city,
-      page,
+      city: search.location || search.searchQuery,
+      term: search.term || null,
+      strict: search.strict,
+      search_query: search.searchQuery,
       count: photos.length,
-      total: response.data.totalHits,
+      total: photos.length,
+      candidates_before_filter: uniqueRawPhotos.length,
+      filtered_out: Math.max(0, uniqueRawPhotos.length - photos.length),
       photos,
       cached: false,
     };
@@ -265,19 +775,48 @@ app.get("/pixabay-photo", async (req, res) => {
   }
 });
 
-// GET /cityphoto?city=Tampa, Florida&limit=25&width=4096&height=2304
+function buildCityPhotoSearchQueries(locationContext, term = "") {
+  const baseQuery = locationContext?.locationQuery || "";
+  const trimmedTerm = String(term || "").trim();
+  const promptBase = trimmedTerm ? `${baseQuery} ${trimmedTerm}`.trim() : baseQuery;
+
+  return Array.from(
+    new Set([
+      promptBase,
+      `${promptBase} downtown`.trim(),
+      `${promptBase} skyline view`.trim(),
+    ].filter(Boolean))
+  );
+}
+
+function clearGoogleCityPhotoCaches() {
+  cityPhotoCache.clear();
+
+  return {
+    cityphoto: clearRequestCache("cityphoto"),
+    query: clearRequestCache("cityphoto-query"),
+    details: clearRequestCache("cityphoto-details"),
+    signature: clearRequestCache("cityphoto-signature"),
+  };
+}
+
+// GET /cityphoto?location=Tampa, USA&term=downtown skyline&limit=80&width=1600&height=1200
 app.get("/cityphoto", async (req, res) => {
-  const city = req.query.city;
-  const limit = Number(req.query.limit || 10);
-  const maxwidth = Number(req.query.width || 1600);
-  const maxheight = Number(req.query.height || 900);
+  const requestedLocation = String(req.query.location || req.query.city || "").trim();
+  const requestedTerm = String(req.query.term || "").trim();
+  const limit = normalizeLimit(req.query.limit, GOOGLE_CITYPHOTO_DEFAULT_LIMIT);
+  const candidateLimit = Math.min(Math.max(limit * 3, 180), 320);
+  const maxwidth = clampLegacyPhotoDimension(req.query.width, GOOGLE_PLACE_PHOTO_MAX_DIMENSION);
+  const maxheight = clampLegacyPhotoDimension(req.query.height, GOOGLE_CITYPHOTO_MIN_HEIGHT_DEFAULT);
+  const minWidth = normalizePositiveInt(req.query.min_width, GOOGLE_CITYPHOTO_MIN_WIDTH_DEFAULT);
+  const minHeight = normalizePositiveInt(req.query.min_height, GOOGLE_CITYPHOTO_MIN_HEIGHT_DEFAULT);
   const mode = String(req.query.mode || "places").toLowerCase() === "places" ? "places" : "assets";
 
-  if (!city) return res.status(400).json({ error: "city parameter required" });
+  if (!requestedLocation) return res.status(400).json({ error: "location parameter required" });
 
   if (mode !== "places") {
     return res.json({
-      city,
+      city: requestedLocation,
       total: 0,
       photos: [],
       cached: false,
@@ -285,68 +824,154 @@ app.get("/cityphoto", async (req, res) => {
     });
   }
 
-  const cachePayload = { city: normalizeCityKey(city), limit, maxwidth, maxheight, mode };
+  const cachePayload = {
+    location: normalizeCityKey(requestedLocation),
+    term: normalizeOptionalKey(requestedTerm),
+    limit,
+    maxwidth,
+    maxheight,
+    minWidth,
+    minHeight,
+    mode,
+    strategy: GOOGLE_CITYPHOTO_STRATEGY_VERSION,
+  };
 
   const fileCached = getRequestCache("cityphoto", cachePayload, CITYPHOTO_CACHE_TTL_MS);
   if (fileCached) {
-    setCityPhotoCache(city, limit, maxwidth, maxheight, fileCached);
+    setCityPhotoCache(cachePayload, fileCached);
     return res.json({ ...fileCached, cached: true, cache_source: "file" });
   }
 
-  const memCached = getCityPhotoCache(city, limit, maxwidth, maxheight);
+  const memCached = getCityPhotoCache(cachePayload);
   if (memCached) {
     return res.json({ ...memCached.data, cached: true, cache_source: "memory" });
   }
 
   try {
-    // 1️⃣ Отримуємо place_id
-    const find = await axios.get("https://maps.googleapis.com/maps/api/place/findplacefromtext/json", {
-      params: {
-        input: city,
-        inputtype: "textquery",
-        fields: "place_id",
-        key: GOOGLE_API_KEY,
-      },
-    });
-
-    const placeId = find.data.candidates?.[0]?.place_id;
-    if (!placeId) return res.status(404).json({ error: "City not found" });
-
-    // 2️⃣ Отримуємо фото
-    const details = await axios.get("https://maps.googleapis.com/maps/api/place/details/json", {
-      params: {
-        place_id: placeId,
-        fields: "photos,name,geometry",
-        key: GOOGLE_API_KEY,
-      },
-    });
-
-    const photos = details.data.result?.photos || [];
-    if (photos.length === 0) {
-      return res.status(404).json({ error: "No photos available for this city" });
+    const locationContext = await resolveLocationContext(requestedLocation);
+    if (!locationContext) {
+      return res.status(404).json({ error: "City not found" });
     }
 
-    // 3️⃣ Формуємо масив об'єктів із розмірами
-    const photoData = photos.slice(0, limit).map((p) => ({
-      width: p.width || maxwidth,
-      height: p.height || maxheight,
-      downloadUrl: `https://maps.googleapis.com/maps/api/place/photo?maxwidth=${maxwidth}&photo_reference=${p.photo_reference}&key=${GOOGLE_API_KEY}`,
-    }));
+    const searchQueries = buildCityPhotoSearchQueries(locationContext, requestedTerm);
+
+    const collectedPhotos = [];
+    const seenPhotoReferences = new Set();
+    const seenPlaceIds = new Set();
+    const candidatePlaces = [];
+
+    for (const searchQuery of searchQueries) {
+      const places = await runTextSearch(searchQuery, locationContext);
+
+      for (const place of places) {
+        if (place?.place_id && !seenPlaceIds.has(place.place_id)) {
+          seenPlaceIds.add(place.place_id);
+          candidatePlaces.push(place);
+        }
+
+        addHighResolutionPhotos(
+          collectedPhotos,
+          seenPhotoReferences,
+          place?.photos || [],
+          place,
+          searchQuery,
+          { minWidth, minHeight, maxwidth, maxheight, limit: candidateLimit }
+        );
+
+        if (collectedPhotos.length >= candidateLimit) {
+          break;
+        }
+      }
+
+      if (collectedPhotos.length >= candidateLimit) {
+        break;
+      }
+    }
+
+    if (collectedPhotos.length < candidateLimit) {
+      for (const place of candidatePlaces) {
+        if (!place?.place_id) {
+          continue;
+        }
+
+        const details = await getPlaceDetails(place.place_id);
+        addHighResolutionPhotos(
+          collectedPhotos,
+          seenPhotoReferences,
+          details?.photos || [],
+          details || place,
+          place.__sourceQuery || locationContext.locationQuery,
+          { minWidth, minHeight, maxwidth, maxheight, limit: candidateLimit }
+        );
+
+        if (collectedPhotos.length >= candidateLimit) {
+          break;
+        }
+      }
+    }
+
+    const rankedPhotos = collectedPhotos
+      .sort((a, b) => scorePhoto(b) - scorePhoto(a))
+      .slice(0, candidateLimit);
+
+    const dedupedPhotos = [];
+    const seenPhotoSignatures = new Set();
+
+    for (const photo of rankedPhotos) {
+      const signature = await resolveGooglePhotoSignature(photo.photo_reference, maxwidth, maxheight);
+      if (signature && seenPhotoSignatures.has(signature)) {
+        continue;
+      }
+
+      if (signature) {
+        seenPhotoSignatures.add(signature);
+      }
+
+      dedupedPhotos.push(photo);
+
+      if (dedupedPhotos.length >= limit) {
+        break;
+      }
+    }
+
+    const photoData = dedupedPhotos.map(({ photo_reference, ...photo }) => photo);
+
+    if (photoData.length === 0) {
+      return res.status(404).json({ error: "No high-resolution photos available for this city" });
+    }
 
     const payload = {
-      city,
+      city: requestedLocation,
+      term: requestedTerm || null,
+      resolved_query: locationContext.locationQuery,
+      requested_limit: limit,
+      min_width: minWidth,
+      min_height: minHeight,
       total: photoData.length,
       photos: photoData,
+      candidates_before_dedupe: rankedPhotos.length,
+      duplicates_filtered: Math.max(0, rankedPhotos.length - photoData.length),
+      search_queries: searchQueries,
+      places_considered: candidatePlaces.length,
       cached: false,
     };
 
-    setCityPhotoCache(city, limit, maxwidth, maxheight, payload);
+    setCityPhotoCache(cachePayload, payload);
     setRequestCache("cityphoto", cachePayload, payload);
     res.json(payload);
   } catch (err) {
     console.error("❌ Error fetching city photo:", err.message);
     res.status(500).json({ error: "Internal Server Error" });
   }
+});
+
+app.post("/cityphoto/cache/reset", authMiddleware, (req, res) => {
+  const cleared = clearGoogleCityPhotoCaches();
+
+  return res.json({
+    success: true,
+    cleared,
+  });
 });
 
 
@@ -367,14 +992,13 @@ app.get("/unsplash-photo", async (req, res) => {
     });
   }
 
-  const city = req.query.city;
+  const search = buildExternalSearchContext(req);
   const limit = Number(req.query.limit || 30);
   const maxwidth = Number(req.query.width || 4000);
-  const page = Number(req.query.page || 1);
   const mode = String(req.query.mode || "places").toLowerCase() === "places" ? "places" : "assets";
 
-  if (!city) {
-    return res.status(400).json({ error: "city parameter required" });
+  if (!search.searchQuery) {
+    return res.status(400).json({ error: "location or city parameter required" });
   }
 
   if (!UNSPLASH_ACCESS_KEY) {
@@ -382,32 +1006,67 @@ app.get("/unsplash-photo", async (req, res) => {
     return res.status(500).json({ error: "UNSPLASH_ACCESS_KEY not configured" });
   }
 
-  const cachePayload = { city: normalizeCityKey(city), limit, maxwidth, page, mode };
+  const cachePayload = {
+    location: normalizeOptionalKey(search.location),
+    term: normalizeOptionalKey(search.term),
+    query: normalizeCityKey(search.searchQuery),
+    strict: search.strict,
+    limit,
+    maxwidth,
+    mode,
+  };
   const cached = getRequestCache("unsplash-photo", cachePayload);
   if (cached) {
     return res.json({ ...cached, cached: true, cache_source: "file" });
   }
 
   try {
-    const response = await axios.get("https://api.unsplash.com/search/photos", {
-      params: {
-        query: city,
-        per_page: Math.min(limit, 30), // Unsplash max is 30 per page
-        page,
-        ...(mode === "places" ? { orientation: "landscape" } : {}),
-        order_by: "relevant",
-      },
-      headers: {
-        Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
-      },
-    });
+    const candidateLimit = Math.max(limit * 3, limit);
+    const rawPhotos = [];
+    let page = 1;
+    let totalPages = 1;
 
-    const photos = response.data.results.map((photo) => {
+    while (page <= EXTERNAL_SEARCH_MAX_PAGES && page <= totalPages && rawPhotos.length < candidateLimit) {
+      const response = await axios.get("https://api.unsplash.com/search/photos", {
+        params: {
+          query: search.searchQuery,
+          per_page: Math.min(candidateLimit, 30),
+          page,
+          ...(mode === "places" ? { orientation: "landscape" } : {}),
+          order_by: "relevant",
+        },
+        headers: {
+          Authorization: `Client-ID ${UNSPLASH_ACCESS_KEY}`,
+        },
+      });
+
+      totalPages = Number(response.data.total_pages || 1);
+      rawPhotos.push(...(response.data.results || []));
+
+      if (!Array.isArray(response.data.results) || response.data.results.length === 0) {
+        break;
+      }
+
+      page += 1;
+    }
+
+    const uniqueRawPhotos = dedupeByKey(rawPhotos, (photo) => photo.id);
+    const filteredRawPhotos = uniqueRawPhotos.filter((photo) => metadataMatchesStrictContext(
+      buildStrictMetadataText([
+        photo.alt_description,
+        photo.description,
+        photo.slug,
+        photo.user?.location,
+      ]),
+      search
+    ));
+
+    const photos = filteredRawPhotos.slice(0, limit).map((photo) => {
       return {
         id: photo.id,
         photographer: photo.user.name,
         username: photo.user.username,
-        alt: photo.alt_description || photo.description || city,
+        alt: photo.alt_description || photo.description || search.searchQuery,
         preview: photo.urls.small, // 400px width
         full: `${photo.urls.raw}&w=${maxwidth}&fit=max&q=80`,
         width: photo.width,
@@ -418,11 +1077,15 @@ app.get("/unsplash-photo", async (req, res) => {
     });
 
     const payload = {
-      city,
-      page,
+      city: search.location || search.searchQuery,
+      term: search.term || null,
+      strict: search.strict,
+      search_query: search.searchQuery,
       count: photos.length,
-      total: response.data.total,
-      total_pages: response.data.total_pages,
+      total: photos.length,
+      total_pages: totalPages,
+      candidates_before_filter: uniqueRawPhotos.length,
+      filtered_out: Math.max(0, uniqueRawPhotos.length - photos.length),
       photos,
       cached: false,
     };

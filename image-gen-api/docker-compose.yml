@@ -12,3 +12,4 @@ services:
     volumes:
       - ./index.js:/app/index.js:ro
       - ./translation-jobs.js:/app/translation-jobs.js:ro
+      - ./batch-translation.js:/app/batch-translation.js:ro
