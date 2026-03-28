@@ -775,10 +775,20 @@ app.get("/pixabay-photo", async (req, res) => {
   }
 });
 
-function buildCityPhotoSearchQueries(locationContext, term = "") {
+function buildCityPhotoSearchQueries(locationContext, term = "", lite = false) {
   const baseQuery = locationContext?.locationQuery || "";
   const trimmedTerm = String(term || "").trim();
   const promptBase = trimmedTerm ? `${baseQuery} ${trimmedTerm}`.trim() : baseQuery;
+
+  if (lite) {
+    // Lite: 2 queries instead of 3 to reduce API calls
+    return Array.from(
+      new Set([
+        promptBase,
+        `${promptBase} landmarks attractions`.trim(),
+      ].filter(Boolean))
+    );
+  }
 
   return Array.from(
     new Set([
@@ -800,7 +810,7 @@ function clearGoogleCityPhotoCaches() {
   };
 }
 
-// GET /cityphoto?location=Tampa, USA&term=downtown skyline&limit=80&width=1600&height=1200
+// GET /cityphoto?location=Tampa, USA&term=downtown skyline&limit=80&width=1600&height=1200&lite=true
 app.get("/cityphoto", async (req, res) => {
   const requestedLocation = String(req.query.location || req.query.city || "").trim();
   const requestedTerm = String(req.query.term || "").trim();
@@ -811,6 +821,8 @@ app.get("/cityphoto", async (req, res) => {
   const minWidth = normalizePositiveInt(req.query.min_width, GOOGLE_CITYPHOTO_MIN_WIDTH_DEFAULT);
   const minHeight = normalizePositiveInt(req.query.min_height, GOOGLE_CITYPHOTO_MIN_HEIGHT_DEFAULT);
   const mode = String(req.query.mode || "places").toLowerCase() === "places" ? "places" : "assets";
+  // lite mode: skip Place Details + Photo Signature calls to save ~90% API cost
+  const lite = String(req.query.lite ?? "true").toLowerCase() !== "false";
 
   if (!requestedLocation) return res.status(400).json({ error: "location parameter required" });
 
@@ -833,6 +845,7 @@ app.get("/cityphoto", async (req, res) => {
     minWidth,
     minHeight,
     mode,
+    lite,
     strategy: GOOGLE_CITYPHOTO_STRATEGY_VERSION,
   };
 
@@ -848,12 +861,28 @@ app.get("/cityphoto", async (req, res) => {
   }
 
   try {
-    const locationContext = await resolveLocationContext(requestedLocation);
-    if (!locationContext) {
-      return res.status(404).json({ error: "City not found" });
+    let locationContext;
+
+    if (lite) {
+      // Lite mode: skip Find Place API call ($0.017 saved), use raw location text
+      locationContext = {
+        placeId: null,
+        placeName: requestedLocation,
+        normalizedLocation: normalizeCityKey(requestedLocation),
+        country: "",
+        formattedAddress: requestedLocation,
+        locationQuery: requestedLocation,
+        lat: null,
+        lng: null,
+      };
+    } else {
+      locationContext = await resolveLocationContext(requestedLocation);
+      if (!locationContext) {
+        return res.status(404).json({ error: "City not found" });
+      }
     }
 
-    const searchQueries = buildCityPhotoSearchQueries(locationContext, requestedTerm);
+    const searchQueries = buildCityPhotoSearchQueries(locationContext, requestedTerm, lite);
 
     const collectedPhotos = [];
     const seenPhotoReferences = new Set();
@@ -888,7 +917,7 @@ app.get("/cityphoto", async (req, res) => {
       }
     }
 
-    if (collectedPhotos.length < candidateLimit) {
+    if (!lite && collectedPhotos.length < candidateLimit) {
       for (const place of candidatePlaces) {
         if (!place?.place_id) {
           continue;
@@ -914,23 +943,44 @@ app.get("/cityphoto", async (req, res) => {
       .sort((a, b) => scorePhoto(b) - scorePhoto(a))
       .slice(0, candidateLimit);
 
-    const dedupedPhotos = [];
-    const seenPhotoSignatures = new Set();
+    let dedupedPhotos;
+    let duplicatesFiltered = 0;
 
-    for (const photo of rankedPhotos) {
-      const signature = await resolveGooglePhotoSignature(photo.photo_reference, maxwidth, maxheight);
-      if (signature && seenPhotoSignatures.has(signature)) {
-        continue;
+    if (lite) {
+      // Lite mode: skip expensive photo signature API calls, use photo_reference for dedup
+      const seenRefs = new Set();
+      dedupedPhotos = [];
+      for (const photo of rankedPhotos) {
+        const ref = String(photo.photo_reference || "").trim();
+        if (ref && seenRefs.has(ref)) {
+          duplicatesFiltered++;
+          continue;
+        }
+        if (ref) seenRefs.add(ref);
+        dedupedPhotos.push(photo);
+        if (dedupedPhotos.length >= limit) break;
       }
+    } else {
+      // Full mode: resolve photo signatures via Place Photos API for accurate dedup
+      dedupedPhotos = [];
+      const seenPhotoSignatures = new Set();
 
-      if (signature) {
-        seenPhotoSignatures.add(signature);
-      }
+      for (const photo of rankedPhotos) {
+        const signature = await resolveGooglePhotoSignature(photo.photo_reference, maxwidth, maxheight);
+        if (signature && seenPhotoSignatures.has(signature)) {
+          duplicatesFiltered++;
+          continue;
+        }
 
-      dedupedPhotos.push(photo);
+        if (signature) {
+          seenPhotoSignatures.add(signature);
+        }
 
-      if (dedupedPhotos.length >= limit) {
-        break;
+        dedupedPhotos.push(photo);
+
+        if (dedupedPhotos.length >= limit) {
+          break;
+        }
       }
     }
 
@@ -947,10 +997,11 @@ app.get("/cityphoto", async (req, res) => {
       requested_limit: limit,
       min_width: minWidth,
       min_height: minHeight,
+      lite,
       total: photoData.length,
       photos: photoData,
       candidates_before_dedupe: rankedPhotos.length,
-      duplicates_filtered: Math.max(0, rankedPhotos.length - photoData.length),
+      duplicates_filtered: duplicatesFiltered,
       search_queries: searchQueries,
       places_considered: candidatePlaces.length,
       cached: false,
