@@ -939,6 +939,27 @@ app.get("/cityphoto", async (req, res) => {
       }
     }
 
+    // Lite fallback: if inline photos were insufficient, fetch details for top places
+    if (lite && collectedPhotos.length < limit && candidatePlaces.length > 0) {
+      const detailsLimit = Math.min(candidatePlaces.length, 5); // max 5 Place Details calls
+      for (let i = 0; i < detailsLimit; i++) {
+        const place = candidatePlaces[i];
+        if (!place?.place_id) continue;
+
+        const details = await getPlaceDetails(place.place_id);
+        addHighResolutionPhotos(
+          collectedPhotos,
+          seenPhotoReferences,
+          details?.photos || [],
+          details || place,
+          place.__sourceQuery || locationContext.locationQuery,
+          { minWidth, minHeight, maxwidth, maxheight, limit: candidateLimit }
+        );
+
+        if (collectedPhotos.length >= limit) break;
+      }
+    }
+
     const rankedPhotos = collectedPhotos
       .sort((a, b) => scorePhoto(b) - scorePhoto(a))
       .slice(0, candidateLimit);
