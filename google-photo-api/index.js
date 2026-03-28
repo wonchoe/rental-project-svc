@@ -861,25 +861,11 @@ app.get("/cityphoto", async (req, res) => {
   }
 
   try {
-    let locationContext;
-
-    if (lite) {
-      // Lite mode: skip Find Place API call ($0.017 saved), use raw location text
-      locationContext = {
-        placeId: null,
-        placeName: requestedLocation,
-        normalizedLocation: normalizeCityKey(requestedLocation),
-        country: "",
-        formattedAddress: requestedLocation,
-        locationQuery: requestedLocation,
-        lat: null,
-        lng: null,
-      };
-    } else {
-      locationContext = await resolveLocationContext(requestedLocation);
-      if (!locationContext) {
-        return res.status(404).json({ error: "City not found" });
-      }
+    // Find Place resolves city name to coordinates for better Text Search results
+    // Cost: $0.017 per call — acceptable even in lite mode
+    const locationContext = await resolveLocationContext(requestedLocation);
+    if (!locationContext) {
+      return res.status(404).json({ error: "City not found" });
     }
 
     const searchQueries = buildCityPhotoSearchQueries(locationContext, requestedTerm, lite);
