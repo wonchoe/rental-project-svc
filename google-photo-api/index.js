@@ -954,8 +954,11 @@ app.get("/cityphoto", async (req, res) => {
     let duplicatesFiltered = 0;
 
     if (lite) {
-      // Lite mode: skip expensive photo signature API calls, use photo_reference for dedup
+      // Lite mode: skip expensive photo signature API calls
+      // Limit per place to avoid 11 photos of the same Clock Tower
       const seenRefs = new Set();
+      const placePhotoCount = new Map();
+      const maxPerPlace = 3;
       dedupedPhotos = [];
       for (const photo of rankedPhotos) {
         const ref = String(photo.photo_reference || "").trim();
@@ -963,6 +966,14 @@ app.get("/cityphoto", async (req, res) => {
           duplicatesFiltered++;
           continue;
         }
+        // Limit photos per place_id to ensure variety
+        const pid = photo.place_id || "unknown";
+        const count = placePhotoCount.get(pid) || 0;
+        if (count >= maxPerPlace) {
+          duplicatesFiltered++;
+          continue;
+        }
+        placePhotoCount.set(pid, count + 1);
         if (ref) seenRefs.add(ref);
         dedupedPhotos.push(photo);
         if (dedupedPhotos.length >= limit) break;
