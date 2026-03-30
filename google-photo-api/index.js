@@ -399,6 +399,41 @@ function addHighResolutionPhotos(target, seenPhotoReferences, photos, place, sou
   }
 }
 
+// Geocoding API: $5/1000 ($0.005) vs Find Place: $17/1000 ($0.017) — 3.4x cheaper
+// Only returns coordinates + address, no place_id/photos — perfect for lite mode
+const GEOCODE_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 365; // 1 year — cities don't move
+
+async function resolveLocationViaGeocode(query) {
+  const cachePayload = { query: normalizeCityKey(query), api: "geocode" };
+  const cached = getRequestCache("geocode", cachePayload, GEOCODE_CACHE_TTL_MS);
+  if (cached) return cached;
+
+  const response = await axios.get("https://maps.googleapis.com/maps/api/geocode/json", {
+    params: { address: query, key: GOOGLE_API_KEY },
+  });
+
+  const result = response.data.results?.[0] || null;
+  if (!result?.geometry?.location) return null;
+
+  const country = normalizeCountryFromAddress(result.formatted_address);
+  const placeName = result.address_components?.find(c => c.types?.includes("locality"))?.long_name || query.split(",")[0].trim();
+  const locationQuery = [placeName, country].filter(Boolean).join(", ");
+
+  const context = {
+    placeId: result.place_id || null,
+    placeName,
+    normalizedLocation: normalizeCityKey(locationQuery || query),
+    country,
+    formattedAddress: result.formatted_address || "",
+    locationQuery: locationQuery || query,
+    lat: result.geometry.location.lat,
+    lng: result.geometry.location.lng,
+  };
+
+  setRequestCache("geocode", cachePayload, context);
+  return context;
+}
+
 async function resolveLocationContext(query) {
   const response = await axios.get("https://maps.googleapis.com/maps/api/place/findplacefromtext/json", {
     params: {
@@ -856,9 +891,10 @@ app.get("/cityphoto", async (req, res) => {
   }
 
   try {
-    // Find Place resolves city name to coordinates for better Text Search results
-    // Cost: $0.017 per call — acceptable even in lite mode
-    const locationContext = await resolveLocationContext(requestedLocation);
+    // Lite: Geocoding API ($0.005) vs Full: Find Place ($0.017), cached for 1 year
+    const locationContext = lite
+      ? await resolveLocationViaGeocode(requestedLocation)
+      : await resolveLocationContext(requestedLocation);
     if (!locationContext) {
       return res.status(404).json({ error: "City not found" });
     }
