@@ -13,6 +13,8 @@ app.use(cors({ origin: "*" }));
 app.use(express.json());
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
+const OPENVERSE_CLIENT_ID = process.env.OPENVERSE_CLIENT_ID;
+const OPENVERSE_CLIENT_SECRET = process.env.OPENVERSE_CLIENT_SECRET;
 const PEXELS_API_KEY = process.env.PEXELS_API_KEY;
 const PIXABAY_API_KEY = process.env.PIXABAY_API_KEY;
 const UNSPLASH_ACCESS_KEY = process.env.UNSPLASH_ACCESS_KEY || process.env.UNSLASH_ACCESS_KEY;
@@ -841,6 +843,7 @@ function clearGoogleCityPhotoCaches() {
     details: clearRequestCache("cityphoto-details"),
     signature: clearRequestCache("cityphoto-signature"),
     wikimedia: clearRequestCache("wikimedia-photo"),
+    openverse: clearRequestCache("openverse-photo"),
   };
 }
 
@@ -1301,6 +1304,99 @@ function authMiddleware(req, res, next) {
 }
 
 app.use(authMiddleware);
+
+// ─── Openverse API ──────────────────────────────────────────────────────────
+// Openverse indexes CC-licensed & public domain media from Flickr, Wikimedia, etc.
+// Token expires every 12h — we auto-refresh using client_credentials flow.
+// Rate limit after verification: 5000 req/day  (vs 200/day anonymous)
+const OPENVERSE_TOKEN_CACHE = { token: null, expiresAt: 0 };
+const OPENVERSE_CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h
+
+async function getOpenverseToken() {
+  if (OPENVERSE_TOKEN_CACHE.token && Date.now() < OPENVERSE_TOKEN_CACHE.expiresAt) {
+    return OPENVERSE_TOKEN_CACHE.token;
+  }
+  const resp = await axios.post(
+    "https://api.openverse.org/v1/auth_tokens/token/",
+    new URLSearchParams({
+      client_id: OPENVERSE_CLIENT_ID,
+      client_secret: OPENVERSE_CLIENT_SECRET,
+      grant_type: "client_credentials",
+    }),
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } }
+  );
+  OPENVERSE_TOKEN_CACHE.token = resp.data.access_token;
+  // expires_in is in seconds, refresh 5 min early
+  OPENVERSE_TOKEN_CACHE.expiresAt = Date.now() + (resp.data.expires_in - 300) * 1000;
+  return OPENVERSE_TOKEN_CACHE.token;
+}
+
+// GET /openverse-photo?location=Tbilisi,+Georgia&limit=30
+app.get("/openverse-photo", async (req, res) => {
+  const location = String(req.query.location || req.query.city || "").trim();
+  const limit = Math.min(Number(req.query.limit || 30), 100);
+
+  if (!location) {
+    return res.status(400).json({ error: "location parameter required" });
+  }
+
+  if (!OPENVERSE_CLIENT_ID || !OPENVERSE_CLIENT_SECRET) {
+    return res.status(500).json({ error: "OPENVERSE credentials not configured" });
+  }
+
+  const cachePayload = { location: normalizeCityKey(location), limit };
+  const cached = getRequestCache("openverse-photo", cachePayload, OPENVERSE_CACHE_TTL_MS);
+  if (cached) {
+    return res.json({ ...cached, cached: true });
+  }
+
+  try {
+    const token = await getOpenverseToken();
+    const allResults = [];
+    let page = 1;
+    const pageSize = Math.min(limit, 50);
+
+    while (allResults.length < limit && page <= 3) {
+      const resp = await axios.get("https://api.openverse.org/v1/images/", {
+        params: {
+          q: location,
+          license_type: "commercial",
+          page_size: pageSize,
+          page,
+        },
+        headers: { Authorization: `Bearer ${token}` },
+        timeout: 10000,
+      });
+
+      const results = resp.data.results || [];
+      allResults.push(...results);
+      if (!resp.data.next || results.length === 0) break;
+      page++;
+    }
+
+    const photos = allResults
+      .filter(r => r.url && r.width >= 800)
+      .slice(0, limit)
+      .map(r => ({
+        id: r.id,
+        title: r.title || "",
+        preview: r.thumbnail || r.url,
+        full: r.url,
+        width: r.width,
+        height: r.height,
+        license: r.license,
+        source: r.source,
+        creator: r.creator || null,
+      }));
+
+    const payload = { city: location, total: photos.length, photos, cached: false };
+    setRequestCache("openverse-photo", cachePayload, payload);
+    res.json(payload);
+  } catch (err) {
+    console.error("Openverse fetch error:", err.message);
+    res.status(500).json({ error: "Openverse fetch failed", photos: [], total: 0 });
+  }
+});
 
 // GET /wikimedia-photo?location=Tbilisi,+Georgia&limit=30
 const WIKIMEDIA_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days — Commons photos stable
