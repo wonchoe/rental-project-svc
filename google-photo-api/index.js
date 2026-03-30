@@ -816,8 +816,11 @@ function buildCityPhotoSearchQueries(locationContext, term = "", lite = false) {
   const promptBase = trimmedTerm ? `${baseQuery} ${trimmedTerm}`.trim() : baseQuery;
 
   if (lite) {
-    // Lite: single query to minimize API calls ($0.032 each)
-    return [promptBase || baseQuery].filter(Boolean);
+    // Lite: use "attractions" suffix to get diverse results from Text Search
+    // Searching just the city name returns only the city itself (1 place)
+    // Adding "attractions" returns 10-20 landmarks/tourist spots with photos
+    const liteQuery = trimmedTerm ? promptBase : `${baseQuery} attractions`.trim();
+    return [liteQuery || baseQuery].filter(Boolean);
   }
 
   return Array.from(
