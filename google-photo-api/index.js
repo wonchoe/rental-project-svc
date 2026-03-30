@@ -845,6 +845,9 @@ function clearGoogleCityPhotoCaches() {
 
 // GET /cityphoto?location=Tampa, USA&term=downtown skyline&limit=80&width=1600&height=1200&lite=true
 app.get("/cityphoto", async (req, res) => {
+  // Disabled — replaced by /wikimedia-photo (free) as primary source
+  return res.status(503).json({ error: "Google Places API temporarily disabled. Use /wikimedia-photo instead.", photos: [], total: 0 });
+
   const requestedLocation = String(req.query.location || req.query.city || "").trim();
   const requestedTerm = String(req.query.term || "").trim();
   const limit = normalizeLimit(req.query.limit, GOOGLE_CITYPHOTO_DEFAULT_LIMIT);
@@ -1297,6 +1300,152 @@ function authMiddleware(req, res, next) {
 }
 
 app.use(authMiddleware);
+
+// GET /wikimedia-photo?location=Tbilisi,+Georgia&limit=30
+const WIKIMEDIA_CACHE_TTL_MS = 1000 * 60 * 60 * 24 * 7; // 7 days — Commons photos stable
+const WIKIMEDIA_API_BASE = "https://commons.wikimedia.org/w/api.php";
+const WIKIMEDIA_USER_AGENT = "rental-photo-api/1.0 (automated city photo search; car-rental-site-generator)";
+
+app.get("/wikimedia-photo", async (req, res) => {
+  const location = String(req.query.location || req.query.city || "").trim();
+  const limit = Math.min(Number(req.query.limit || 20), 50);
+  const iiurlwidth = 1600;
+
+  if (!location) {
+    return res.status(400).json({ error: "location parameter required" });
+  }
+
+  const cityName = location.split(",")[0].trim();
+  const cachePayload = { city: normalizeCityKey(cityName), limit, iiurlwidth };
+
+  const cached = getRequestCache("wikimedia-photo", cachePayload, WIKIMEDIA_CACHE_TTL_MS);
+  if (cached) {
+    return res.json({ ...cached, cached: true });
+  }
+
+  async function fetchWikimediaCategory(categoryTitle) {
+    try {
+      const response = await axios.get(WIKIMEDIA_API_BASE, {
+        params: {
+          action: "query",
+          generator: "categorymembers",
+          gcmtitle: `Category:${categoryTitle}`,
+          gcmtype: "file",
+          gcmlimit: 50,
+          prop: "imageinfo",
+          iiprop: "url|size",
+          iiurlwidth,
+          format: "json",
+        },
+        headers: { "User-Agent": WIKIMEDIA_USER_AGENT },
+        timeout: 10000,
+      });
+      return Object.values(response.data?.query?.pages || {});
+    } catch {
+      return [];
+    }
+  }
+
+  async function fetchWikimediaGeosearch(lat, lng) {
+    try {
+      const response = await axios.get(WIKIMEDIA_API_BASE, {
+        params: {
+          action: "query",
+          generator: "geosearch",
+          ggsnamespace: 6,
+          ggscoord: `${lat}|${lng}`,
+          ggsradius: 10000,
+          ggslimit: 50,
+          prop: "imageinfo",
+          iiprop: "url|size",
+          iiurlwidth,
+          format: "json",
+        },
+        headers: { "User-Agent": WIKIMEDIA_USER_AGENT },
+        timeout: 10000,
+      });
+      return Object.values(response.data?.query?.pages || {});
+    } catch {
+      return [];
+    }
+  }
+
+  function isPhotoPage(page) {
+    const title = String(page.title || "").toLowerCase();
+    // Only real photos, no maps/logos/flags/coats of arms
+    if (!/\.(jpg|jpeg|png|webp)$/.test(title)) return false;
+    if (/\b(map|flag|coat|arms|logo|icon|diagram|plan|illustration|emblem|stamp|coin)\b/.test(title)) return false;
+    return true;
+  }
+
+  function pageToPhoto(page) {
+    const ii = page.imageinfo?.[0];
+    if (!ii?.thumburl || !ii?.url) return null;
+    return {
+      id: String(page.pageid || page.title),
+      title: String(page.title || "").replace("File:", ""),
+      preview: ii.thumburl,
+      full: ii.url,
+      width: ii.thumbwidth || iiurlwidth,
+      height: ii.thumbheight || Math.round(iiurlwidth * 0.75),
+    };
+  }
+
+  try {
+    const seenIds = new Set();
+    const allPages = [];
+
+    const addPages = (pages) => {
+      for (const p of pages) {
+        const id = p.pageid || p.title;
+        if (!seenIds.has(id)) {
+          seenIds.add(id);
+          allPages.push(p);
+        }
+      }
+    };
+
+    // 1. Category-based: try subcategories first (best quality), then city itself
+    const categoriesToTry = [
+      `Views of ${cityName}`,
+      `Panoramas of ${cityName}`,
+      `Landscapes of ${cityName}`,
+      cityName,
+    ];
+
+    for (const cat of categoriesToTry) {
+      if (allPages.filter(isPhotoPage).length >= limit * 2) break;
+      addPages(await fetchWikimediaCategory(cat));
+    }
+
+    // 2. Geosearch fallback if not enough photos
+    if (allPages.filter(isPhotoPage).length < limit) {
+      const geo = await resolveLocationViaGeocode(location);
+      if (geo?.lat && geo?.lng) {
+        addPages(await fetchWikimediaGeosearch(geo.lat, geo.lng));
+      }
+    }
+
+    const photos = allPages
+      .filter(isPhotoPage)
+      .map(pageToPhoto)
+      .filter(Boolean)
+      .slice(0, limit);
+
+    const payload = {
+      city: location,
+      total: photos.length,
+      photos,
+      cached: false,
+    };
+
+    setRequestCache("wikimedia-photo", cachePayload, payload);
+    res.json(payload);
+  } catch (err) {
+    console.error("Wikimedia fetch error:", err.message);
+    res.status(500).json({ error: "Wikimedia fetch failed", photos: [], total: 0 });
+  }
+});
 
 app.listen(process.env.PORT, () =>
   console.log(`✅ Google Photo API running on port ${process.env.PORT}`)
