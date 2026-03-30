@@ -429,7 +429,7 @@ async function resolveLocationContext(query) {
   };
 }
 
-async function runTextSearch(query, locationContext) {
+async function runTextSearch(query, locationContext, maxPages = 3) {
   const cachePayload = {
     query: normalizeCityKey(query),
     base_location: locationContext?.normalizedLocation || null,
@@ -445,7 +445,7 @@ async function runTextSearch(query, locationContext) {
   let nextPageToken = null;
   let page = 0;
 
-  while (page < 3) {
+  while (page < maxPages) {
     if (page > 0) {
       await sleep(GOOGLE_CITYPHOTO_PAGE_DELAY_MS);
     }
@@ -781,13 +781,8 @@ function buildCityPhotoSearchQueries(locationContext, term = "", lite = false) {
   const promptBase = trimmedTerm ? `${baseQuery} ${trimmedTerm}`.trim() : baseQuery;
 
   if (lite) {
-    // Lite: 2 queries instead of 3 to reduce API calls
-    return Array.from(
-      new Set([
-        promptBase,
-        `${promptBase} landmarks attractions`.trim(),
-      ].filter(Boolean))
-    );
+    // Lite: single query to minimize API calls ($0.032 each)
+    return [promptBase || baseQuery].filter(Boolean);
   }
 
   return Array.from(
@@ -876,7 +871,7 @@ app.get("/cityphoto", async (req, res) => {
     const candidatePlaces = [];
 
     for (const searchQuery of searchQueries) {
-      const places = await runTextSearch(searchQuery, locationContext);
+      const places = await runTextSearch(searchQuery, locationContext, lite ? 1 : 3);
 
       for (const place of places) {
         if (place?.place_id && !seenPlaceIds.has(place.place_id)) {
@@ -925,9 +920,9 @@ app.get("/cityphoto", async (req, res) => {
       }
     }
 
-    // Lite fallback: if inline photos were insufficient, fetch details for top places
-    if (lite && collectedPhotos.length < limit && candidatePlaces.length > 0) {
-      const detailsLimit = Math.min(candidatePlaces.length, 5); // max 5 Place Details calls
+    // Lite fallback: only if we got ZERO photos from inline results, fetch details for 3 top places
+    if (lite && collectedPhotos.length === 0 && candidatePlaces.length > 0) {
+      const detailsLimit = Math.min(candidatePlaces.length, 3);
       for (let i = 0; i < detailsLimit; i++) {
         const place = candidatePlaces[i];
         if (!place?.place_id) continue;
