@@ -1308,7 +1308,9 @@ const WIKIMEDIA_USER_AGENT = "rental-photo-api/1.0 (automated city photo search;
 
 app.get("/wikimedia-photo", async (req, res) => {
   const location = String(req.query.location || req.query.city || "").trim();
-  const limit = Math.min(Number(req.query.limit || 20), 50);
+  const limit = Math.min(Number(req.query.limit || 30), 100);
+  // How many 50-file pages to fetch per category (1 page = 50 files)
+  const maxCategoryPages = Math.ceil(limit / 50) + 1;
   const iiurlwidth = 1600;
 
   if (!location) {
@@ -1323,10 +1325,14 @@ app.get("/wikimedia-photo", async (req, res) => {
     return res.json({ ...cached, cached: true });
   }
 
-  async function fetchWikimediaCategory(categoryTitle) {
+  async function fetchWikimediaCategory(categoryTitle, maxPages = 3) {
     try {
-      const response = await axios.get(WIKIMEDIA_API_BASE, {
-        params: {
+      const allPages = [];
+      let continueToken = null;
+      let page = 0;
+
+      while (page < maxPages) {
+        const params = {
           action: "query",
           generator: "categorymembers",
           gcmtitle: `Category:${categoryTitle}`,
@@ -1336,11 +1342,21 @@ app.get("/wikimedia-photo", async (req, res) => {
           iiprop: "url|size",
           iiurlwidth,
           format: "json",
-        },
-        headers: { "User-Agent": WIKIMEDIA_USER_AGENT },
-        timeout: 10000,
-      });
-      return Object.values(response.data?.query?.pages || {});
+        };
+        if (continueToken) {
+          params.gcmcontinue = continueToken;
+        }
+        const response = await axios.get(WIKIMEDIA_API_BASE, {
+          params,
+          headers: { "User-Agent": WIKIMEDIA_USER_AGENT },
+          timeout: 10000,
+        });
+        allPages.push(...Object.values(response.data?.query?.pages || {}));
+        continueToken = response.data?.continue?.gcmcontinue || null;
+        page++;
+        if (!continueToken) break;
+      }
+      return allPages;
     } catch {
       return [];
     }
@@ -1415,7 +1431,7 @@ app.get("/wikimedia-photo", async (req, res) => {
 
     for (const cat of categoriesToTry) {
       if (allPages.filter(isPhotoPage).length >= limit * 2) break;
-      addPages(await fetchWikimediaCategory(cat));
+      addPages(await fetchWikimediaCategory(cat, maxCategoryPages));
     }
 
     // 2. Geosearch fallback if not enough photos
