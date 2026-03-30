@@ -840,6 +840,7 @@ function clearGoogleCityPhotoCaches() {
     query: clearRequestCache("cityphoto-query"),
     details: clearRequestCache("cityphoto-details"),
     signature: clearRequestCache("cityphoto-signature"),
+    wikimedia: clearRequestCache("wikimedia-photo"),
   };
 }
 
