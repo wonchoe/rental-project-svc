@@ -945,6 +945,14 @@ app.post("/text/anthropic", authMiddleware, async (req, res) => {
   await handleTextGeneration(req, res, "anthropic");
 });
 
+app.post("/text/web-search", authMiddleware, async (req, res) => {
+  await handleTextWebSearch(req, res);
+});
+
+app.post("/text/openai/web-search", authMiddleware, async (req, res) => {
+  await handleTextWebSearch(req, res);
+});
+
 async function handleTextGeneration(req, res, forcedProvider = null) {
   try {
     console.log("🧠 Text generation request received.");
@@ -1033,6 +1041,74 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
   }
 }
 
+async function handleTextWebSearch(req, res) {
+  try {
+    console.log("🌐 Web search text generation request received.");
+    const {
+      prompt,
+      max_tokens = 8192,
+      model = "",
+    } = req.body;
+
+    if (!prompt || typeof prompt !== "string") {
+      return res.status(400).json({ error: "prompt is required and must be a string" });
+    }
+
+    const maxTokens = Math.min(parseInt(max_tokens, 10) || 8192, 12000);
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
+    const input = [
+      {
+        role: "system",
+        content: [
+          {
+            type: "input_text",
+            text: "You are a research assistant that uses web search when current or factual web grounding improves the answer. Return exactly what the user asks for and preserve strict JSON-only response requirements when requested."
+          }
+        ]
+      },
+      {
+        role: "user",
+        content: [
+          {
+            type: "input_text",
+            text: prompt
+          }
+        ]
+      }
+    ];
+
+    const response = await openai.responses.create({
+      model: openAiModel,
+      input,
+      tools: [{
+        type: "web_search",
+        external_web_access: true,
+      }],
+      tool_choice: "auto",
+      include: ["web_search_call.action.sources"],
+      max_output_tokens: maxTokens,
+      reasoning: {
+        effort: openAiModel === "gpt-5-nano" ? "low" : "medium",
+      },
+    });
+
+    const text = response?.output_text || extractResponseOutputText(response);
+    const metadata = extractWebSearchMetadata(response);
+
+    res.json({
+      text,
+      provider_used: "openai",
+      model_used: openAiModel,
+      response_id: response?.id || null,
+      web_search_call_id: metadata.webSearchCallId,
+      sources: metadata.sources,
+    });
+  } catch (err) {
+    console.error("❌ Web search text generation failed:", err);
+    res.status(500).json({ error: err.message });
+  }
+}
+
 app.get("/text-provider-status", authMiddleware, async (req, res) => {
   try {
     const openaiStatus = await getOpenAIStatus();
@@ -1088,6 +1164,70 @@ async function generateTextWithAnthropic({ systemMessage, userMessage, maxTokens
 
   const firstText = data?.content?.find(item => item?.type === "text")?.text;
   return firstText || "";
+}
+
+function extractResponseOutputText(response) {
+  const output = Array.isArray(response?.output) ? response.output : [];
+
+  for (const item of output) {
+    if (item?.type !== "message" || !Array.isArray(item?.content)) {
+      continue;
+    }
+
+    const textBlock = item.content.find((content) => content?.type === "output_text" && typeof content?.text === "string");
+    if (textBlock?.text) {
+      return textBlock.text;
+    }
+  }
+
+  return "";
+}
+
+function extractWebSearchMetadata(response) {
+  const output = Array.isArray(response?.output) ? response.output : [];
+  const sourceMap = new Map();
+  let webSearchCallId = null;
+
+  for (const item of output) {
+    if (item?.type === "web_search_call") {
+      webSearchCallId = webSearchCallId || item?.id || null;
+
+      const sources = item?.action?.sources;
+      if (Array.isArray(sources)) {
+        for (const source of sources) {
+          const url = String(source?.url || source?.uri || "").trim();
+          if (!url) continue;
+          sourceMap.set(url, {
+            url,
+            title: String(source?.title || "").trim() || url,
+          });
+        }
+      }
+    }
+
+    if (item?.type === "message" && Array.isArray(item?.content)) {
+      for (const block of item.content) {
+        const annotations = Array.isArray(block?.annotations) ? block.annotations : [];
+        for (const annotation of annotations) {
+          if (annotation?.type !== "url_citation") {
+            continue;
+          }
+
+          const url = String(annotation?.url || "").trim();
+          if (!url) continue;
+          sourceMap.set(url, {
+            url,
+            title: String(annotation?.title || "").trim() || url,
+          });
+        }
+      }
+    }
+  }
+
+  return {
+    webSearchCallId,
+    sources: Array.from(sourceMap.values()),
+  };
 }
 
 function canFallbackToAnthropic() {
