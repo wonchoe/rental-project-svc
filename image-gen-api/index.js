@@ -1077,14 +1077,9 @@ async function handleTextWebSearch(req, res) {
       }
     ];
 
-    const response = await openai.responses.create({
+    const searchResponse = await openai.responses.create({
       model: openAiModel,
       input,
-      text: {
-        format: {
-          type: "json_object",
-        },
-      },
       tools: [{
         type: "web_search",
         external_web_access: true,
@@ -1097,14 +1092,47 @@ async function handleTextWebSearch(req, res) {
       },
     });
 
-    const text = response?.output_text || extractResponseOutputText(response);
-    const metadata = extractWebSearchMetadata(response);
+    const researchText = searchResponse?.output_text || extractResponseOutputText(searchResponse);
+    const metadata = extractWebSearchMetadata(searchResponse);
+
+    const structuringResponse = await openai.responses.create({
+      model: openAiModel,
+      input: [
+        {
+          role: "system",
+          content: [
+            {
+              type: "input_text",
+              text: "You convert grounded research notes into strict JSON. Return only valid JSON with no markdown and no extra text. Preserve the exact schema requested by the user."
+            }
+          ]
+        },
+        {
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: `${prompt}\n\nGrounded research notes:\n${researchText}`
+            }
+          ]
+        }
+      ],
+      text: {
+        format: {
+          type: "json_object",
+        },
+      },
+      max_output_tokens: Math.min(maxTokens, 6000),
+    });
+
+    const text = structuringResponse?.output_text || extractResponseOutputText(structuringResponse);
 
     res.json({
       text,
       provider_used: "openai",
       model_used: openAiModel,
-      response_id: response?.id || null,
+      response_id: searchResponse?.id || null,
+      structuring_response_id: structuringResponse?.id || null,
       web_search_call_id: metadata.webSearchCallId,
       sources: metadata.sources,
     });
