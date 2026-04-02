@@ -1323,55 +1323,62 @@ function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
 }
 
 async function getOpenAIStatus() {
-  const key = process.env.OPENAI_API_KEY;
-  if (!key) {
+  const runtimeKey = process.env.OPENAI_API_KEY;
+  const balanceKey = process.env.OPENAI_BALANCE_TOKEN || "";
+
+  if (!runtimeKey && !balanceKey) {
     return {
       configured: false,
       available: false,
-      balance: { display: "unavailable (no key)", value: null, currency: null, source: "none" },
+      balance: { display: "unavailable (no keys)", value: null, currency: null, source: "none" },
     };
   }
 
   let available = false;
   try {
-    const modelProbe = await fetch("https://api.openai.com/v1/models", {
-      headers: { Authorization: `Bearer ${key}` }
-    });
-    available = modelProbe.ok;
+    if (runtimeKey) {
+      const modelProbe = await fetch("https://api.openai.com/v1/models", {
+        headers: { Authorization: `Bearer ${runtimeKey}` }
+      });
+      available = modelProbe.ok;
+    }
   } catch (_) {
     available = false;
   }
 
-  // Best-effort legacy balance endpoint. May be unavailable for many accounts.
-  let balanceDisplay = "unavailable via API";
+  let balanceDisplay = balanceKey ? "unavailable via API" : "unavailable (no balance token)";
   let balanceValue = null;
   let balanceCurrency = "USD";
+  let balanceSource = balanceKey ? "unavailable" : "missing_balance_token";
 
-  try {
-    const balanceRes = await fetch("https://api.openai.com/dashboard/billing/credit_grants", {
-      headers: { Authorization: `Bearer ${key}` }
-    });
+  if (balanceKey) {
+    try {
+      const balanceRes = await fetch("https://api.openai.com/dashboard/billing/credit_grants", {
+        headers: { Authorization: `Bearer ${balanceKey}` }
+      });
 
-    if (balanceRes.ok) {
-      const balanceData = await balanceRes.json();
-      const total = Number(balanceData?.total_available ?? 0);
-      if (Number.isFinite(total)) {
-        balanceValue = total;
-        balanceDisplay = `$${total.toFixed(2)}`;
+      if (balanceRes.ok) {
+        const balanceData = await balanceRes.json();
+        const total = Number(balanceData?.total_available ?? 0);
+        if (Number.isFinite(total)) {
+          balanceValue = total;
+          balanceDisplay = `$${total.toFixed(2)}`;
+          balanceSource = "openai_legacy_credit_grants";
+        }
       }
+    } catch (_) {
+      // Ignore and keep unavailable state.
     }
-  } catch (_) {
-    // Ignore and keep unavailable state.
   }
 
   return {
-    configured: true,
+    configured: Boolean(runtimeKey),
     available,
     balance: {
       display: balanceDisplay,
       value: balanceValue,
       currency: balanceCurrency,
-      source: balanceValue === null ? "unavailable" : "openai_legacy_credit_grants",
+      source: balanceSource,
     },
   };
 }
