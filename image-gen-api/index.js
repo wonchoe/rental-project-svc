@@ -1353,18 +1353,27 @@ async function getOpenAIStatus() {
 
   if (balanceKey) {
     try {
-      const balanceRes = await fetch("https://api.openai.com/dashboard/billing/credit_grants", {
-        headers: { Authorization: `Bearer ${balanceKey}` }
-      });
+      // Use /v1/organization/costs?bucket_width=1d&limit=30 to sum recent spend.
+      // credit_grants is browser-only and returns 403 for admin/secret keys.
+      const start30d = Math.floor((Date.now() - 30 * 24 * 60 * 60 * 1000) / 1000);
+      const costsRes = await fetch(
+        `https://api.openai.com/v1/organization/costs?start_time=${start30d}&bucket_width=1d&limit=30`,
+        { headers: { Authorization: `Bearer ${balanceKey}` } }
+      );
 
-      if (balanceRes.ok) {
-        const balanceData = await balanceRes.json();
-        const total = Number(balanceData?.total_available ?? 0);
-        if (Number.isFinite(total)) {
-          balanceValue = total;
-          balanceDisplay = `$${total.toFixed(2)}`;
-          balanceSource = "openai_legacy_credit_grants";
+      if (costsRes.ok) {
+        const costsData = await costsRes.json();
+        const results = costsData?.data ?? costsData?.results ?? [];
+        let totalSpent = 0;
+        for (const bucket of results) {
+          const amt = bucket?.results?.[0]?.amount?.value ?? bucket?.amount?.value ?? 0;
+          totalSpent += Number(amt) || 0;
         }
+        // Convert from cents to dollars if needed (API returns dollars)
+        balanceValue = totalSpent;
+        balanceDisplay = `Spent $${totalSpent.toFixed(2)} (30d)`;
+        balanceCurrency = "USD";
+        balanceSource = "openai_org_costs_30d";
       }
     } catch (_) {
       // Ignore and keep unavailable state.
