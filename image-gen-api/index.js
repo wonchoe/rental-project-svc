@@ -1080,6 +1080,11 @@ async function handleTextWebSearch(req, res) {
     const response = await openai.responses.create({
       model: openAiModel,
       input,
+      text: {
+        format: {
+          type: "json_object",
+        },
+      },
       tools: [{
         type: "web_search",
         external_web_access: true,
