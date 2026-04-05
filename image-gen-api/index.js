@@ -2636,34 +2636,48 @@ app.post("/translate-batch-start", authMiddleware, async (req, res) => {
 
     console.log(`📦 Batch JSONL created: ${jsonl.split('\n').length} lines, ${jsonl.length} bytes`);
 
-    // Upload & start batch
-    const batchResult = await BatchTranslation.uploadAndStartBatch(jsonl);
-
-    // Update job with batch info
-    TranslationJobs.updateBatchStatus(job.id, {
-      batchApiId: batchResult.batchId,
-      inputFileId: batchResult.inputFileId,
-      status: batchResult.status,
-      requestCounts: batchResult.requestCounts,
-    });
+    // Mark job as uploading and respond immediately so the HTTP request
+    // doesn't time out while we upload what can be a large JSONL to OpenAI.
     TranslationJobs.updateJob(job.id, {
-      status: 'batch_submitted',
+      status: 'batch_uploading',
       startedAt: Date.now(),
-      batchSubmittedAt: Date.now(),
-    });
-
-    // Mark all files as submitted
-    job.files.forEach((f, i) => {
-      if (f.status === 'batch_queued') {
-        TranslationJobs.updateFileStatus(job.id, f.path, f.lang, 'batch_submitted');
-      }
     });
 
     res.json({
       success: true,
       job: TranslationJobs.getJobSummary(job.id),
-      batchId: batchResult.batchId,
-      message: 'Batch submitted to OpenAI',
+      message: 'Batch upload started (background)',
+    });
+
+    // Upload & start batch in background
+    setImmediate(async () => {
+      try {
+        const batchResult = await BatchTranslation.uploadAndStartBatch(jsonl);
+
+        // Update job with batch info
+        TranslationJobs.updateBatchStatus(job.id, {
+          batchApiId: batchResult.batchId,
+          inputFileId: batchResult.inputFileId,
+          status: batchResult.status,
+          requestCounts: batchResult.requestCounts,
+        });
+        TranslationJobs.updateJob(job.id, {
+          status: 'batch_submitted',
+          batchSubmittedAt: Date.now(),
+        });
+
+        // Mark all files as submitted
+        job.files.forEach((f) => {
+          if (f.status === 'batch_queued') {
+            TranslationJobs.updateFileStatus(job.id, f.path, f.lang, 'batch_submitted');
+          }
+        });
+
+        console.log(`✅ [batch-start] Background upload done: batchId=${batchResult.batchId}`);
+      } catch (err) {
+        console.error('❌ [batch-start] Background upload failed:', err);
+        TranslationJobs.updateJob(job.id, { status: 'failed', error: err.message });
+      }
     });
   } catch (err) {
     console.error('❌ Batch start failed:', err);

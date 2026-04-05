@@ -131,7 +131,7 @@ export function getJob(jobId) {
 export function getActiveJobForSite(siteId) {
     return Object.values(jobsCache).find(job => 
         job.siteId === siteId && 
-        (job.status === 'pending' || job.status === 'processing' || job.status === 'batch_submitted')
+        (job.status === 'pending' || job.status === 'processing' || job.status === 'batch_uploading' || job.status === 'batch_submitted')
     ) || null;
 }
 
@@ -440,7 +440,7 @@ const MAX_BATCH_RETRIES = 2;
 export function getActiveBatchJobs() {
     return Object.values(jobsCache).filter(job =>
         job.mode === 'batch' &&
-        ['pending', 'processing', 'batch_submitted'].includes(job.status)
+        ['pending', 'processing', 'batch_uploading', 'batch_submitted'].includes(job.status)
     );
 }
 
