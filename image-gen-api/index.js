@@ -986,7 +986,7 @@ async function handleTextGeneration(req, res, forcedProvider = null) {
     const normalizedProvider = String(providerCandidate).toLowerCase();
     const providerUsed = (normalizedProvider === "anthropic" || normalizedProvider === "claude") ? "anthropic" : "openai";
     let finalProviderUsed = providerUsed;
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_CHEAP || "gpt-5-mini");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_CHEAP || "gpt-4o-mini");
     let modelUsed = providerUsed === "anthropic"
       ? (process.env.ANTHROPIC_MODEL || "claude-sonnet-4-5")
       : openAiModel;
@@ -1055,7 +1055,7 @@ async function handleTextWebSearch(req, res) {
     }
 
     const maxTokens = Math.min(parseInt(max_tokens, 10) || 8192, 12000);
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-4o-mini");
     const input = [
       {
         role: "system",
@@ -1291,9 +1291,9 @@ function isOpenAIQuotaOrRateLimitError(err) {
   );
 }
 
-function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
-  const cheapDefault = process.env.OPENAI_MODEL_CHEAP || "gpt-5-mini";
-  const qualityDefault = process.env.OPENAI_MODEL_QUALITY || fallbackModel || "gpt-5.4";
+function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-4o-mini") {
+  const cheapDefault = process.env.OPENAI_MODEL_CHEAP || "gpt-4o-mini";
+  const qualityDefault = process.env.OPENAI_MODEL_QUALITY || fallbackModel || "gpt-4o-mini";
   const raw = String(requestedModel || "").toLowerCase().trim();
 
   if (!raw) {
@@ -1310,13 +1310,12 @@ function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-5") {
 
   const allowed = new Set([
     "gpt-5-nano",
-    "gpt-5-mini",
+    "gpt-4o-mini",
     "gpt-5.1",
-    "gpt-5.4",
   ]);
 
-  if (raw === "gpt-4o-mini" || raw === "gpt-4.1-mini" || raw === "gpt-5") {
-    return "gpt-5-mini";
+  if (raw === "gpt-5-mini" || raw === "gpt-5.4" || raw === "gpt-4.1-mini" || raw === "gpt-5") {
+    return "gpt-4o-mini";
   }
 
   return allowed.has(raw) ? raw : qualityDefault;
@@ -2359,7 +2358,7 @@ app.post("/article", authMiddleware, async (req, res) => {
     }
 
     let content = "";
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-4o-mini");
     let modelUsed = openAiModel;
     let tokensUsed;
     let finalProviderUsed = "openai";
@@ -2441,7 +2440,7 @@ app.post("/style", authMiddleware, async (req, res) => {
     let modelUsed = "";
     let tokensUsed;
     let finalProviderUsed = providerUsed;
-    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-5.4");
+    const openAiModel = resolveOpenAIModel(model, process.env.OPENAI_MODEL_QUALITY || "gpt-4o-mini");
 
     if (providerUsed === "anthropic") {
       content = await generateTextWithAnthropic({
