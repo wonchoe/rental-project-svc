@@ -12,6 +12,23 @@ function getOpenAI() {
 const DEFAULT_MODEL = 'gpt-4o-mini';
 const MAX_RETRIES = 2;
 
+export function sanitizeTranslatedTemplate(content) {
+  if (typeof content !== 'string') {
+    return '';
+  }
+
+  const normalized = content.replace(/\r\n/g, '\n').replace(/—/g, '-');
+  const trimmed = normalized.trim();
+  const fenceMatch = trimmed.match(/^```(?:[a-z0-9_-]+)?\s*\n([\s\S]*?)\n```$/i);
+
+  if (fenceMatch) {
+    console.log('🧹 [sanitizeTranslatedTemplate] Stripped markdown code fence from translation output');
+    return fenceMatch[1].trim();
+  }
+
+  return trimmed;
+}
+
 // ─── JSONL Generation ──────────────────────────────────────────
 
 /**
@@ -128,8 +145,9 @@ export async function downloadBatchResults(outputFileId) {
       const fileIndex = parseInt(customId.split('::')[1], 10);
 
       if (obj.response?.status_code === 200) {
-        const translated = (obj.response.body?.choices?.[0]?.message?.content?.trim() || '')
-          .replace(/—/g, '-');
+        const translated = sanitizeTranslatedTemplate(
+          obj.response.body?.choices?.[0]?.message?.content || ''
+        );
         results.push({
           customId,
           fileIndex,
@@ -183,6 +201,7 @@ export async function downloadBatchErrors(errorFileId) {
  */
 export function validateTranslation(original, translated, meta = '') {
   const errors = [];
+  translated = sanitizeTranslatedTemplate(translated);
 
   if (!translated || translated.trim().length === 0) {
     console.warn(`⚠️ [validateTranslation] Empty translation ${meta}`);

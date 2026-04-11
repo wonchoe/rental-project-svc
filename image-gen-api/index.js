@@ -2100,7 +2100,9 @@ async function processJob(jobId) {
               temperature: 0.3,
             });
 
-            const translated = (completion?.choices?.[0]?.message?.content?.trim() || "").replace(/—/g, "-");
+            const translated = BatchTranslation.sanitizeTranslatedTemplate(
+              completion?.choices?.[0]?.message?.content || ""
+            );
 
             if (!translated) {
               throw new Error("Empty translation result");
@@ -2183,7 +2185,9 @@ app.post("/translate-blade-batch", authMiddleware, async (req, res) => {
           temperature: 0.3, // Lower temperature for more consistent translations
         });
 
-        const translated = (completion?.choices?.[0]?.message?.content?.trim() || "").replace(/—/g, "-");
+        const translated = BatchTranslation.sanitizeTranslatedTemplate(
+          completion?.choices?.[0]?.message?.content || ""
+        );
 
         if (!translated) {
           throw new Error(`No translated content for ${path}`);
@@ -2295,8 +2299,9 @@ OUTPUT RULES:
       temperature: 0.3, // Lower temperature for more consistent translations
     });
 
-const translated =
-  (completion?.choices?.[0]?.message?.content?.trim() || "").replace(/—/g, "-");
+const translated = BatchTranslation.sanitizeTranslatedTemplate(
+  completion?.choices?.[0]?.message?.content || ""
+);
 
     if (!translated) {
       throw new Error("No translated content received from GPT-4o-mini.");
