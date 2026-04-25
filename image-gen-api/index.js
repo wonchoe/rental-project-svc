@@ -46,7 +46,7 @@ if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 // Роздаємо статичні файли
 app.use("/output", express.static(outputDir));
 
-// 🎯 Мапа підтримуваних розмірів для gpt-image-2
+// 🎯 Мапа підтримуваних розмірів для gpt-image-1.5 (logos/favicons with transparency)
 const sizeMap = {
   1: "1024x1024",
   2: "1536x1024",  // landscape
@@ -374,13 +374,15 @@ app.post("/generate-favicon-preview", authMiddleware, async (req, res) => {
     const { prompt } = req.body;
     console.log(`🎨 [OpenAI] Generating favicon preview: "${prompt}"`);
 
-    // Генеруємо на БІЛОМУ фоні для кращого результату
+    // Генеруємо з прозорим фоном для кращого результату
     const result = await openai.images.generate({
-      model: "gpt-image-2",
-      prompt: `${prompt}, centered icon on clean white background, no text, professional app icon`,
+      model: "gpt-image-1.5",
+      prompt: `${prompt}, centered icon on transparent background, no text, professional app icon`,
       n: 1,
       quality: "low",
       size: "1024x1024",
+      background: "transparent",
+      output_format: "png",
     });
 
     const item = result.data[0];
@@ -621,13 +623,15 @@ app.post("/generate-favicon", authMiddleware, async (req, res) => {
     const { prompt } = req.body;
     console.log(`🎨 Generating favicon: "${prompt}"`);
 
-    // 1️⃣ Генеруємо 1024×1024 з прозорим фоном
+    // 1️⃣ Генеруємо 1024×1024 з прозорим фоном (альфа канал)
     const result = await openai.images.generate({
-      model: "gpt-image-2",
+      model: "gpt-image-1.5",
       prompt: `${prompt}, centered object, transparent background, no text`,
       n: 1,
       quality: "low",
       size: "1024x1024",
+      background: "transparent",
+      output_format: "png",
     });
 
     const item = result.data[0];
@@ -864,17 +868,19 @@ app.post("/generate", authMiddleware, async (req, res) => {
     const { prompt, n = 4, size = 2 } = req.body; // Default size=2 (16:9 landscape)
     const selectedSize = sizeMap[size] || sizeMap[2];
 
-    // Додаємо до промпту вказівку про горизонтальний формат 3:1
-    const enhancedPrompt = `${prompt}. IMPORTANT: Create a horizontal logo in approximately 3:1 aspect ratio (similar to 1340x450 pixels proportion). Wide horizontal format, not square or vertical. DO NOT add any border, frame, outline or decorative edges around the logo. Clean sharp edges.`;
+    // Додаємо до промпту вказівку про горизонтальний формат 3:1 з прозорим фоном
+    const enhancedPrompt = `${prompt}. IMPORTANT: Create a horizontal logo in approximately 3:1 aspect ratio (similar to 1340x450 pixels proportion). Wide horizontal format, not square or vertical. DO NOT add any border, frame, outline or decorative edges around the logo. Clean sharp edges. Transparent background, no background.`;
 
     console.log(`🧠 Generating ${n} images with prompt: "${enhancedPrompt}" and size: ${selectedSize}`);
 
     const result = await openai.images.generate({
-      model: "gpt-image-2",
+      model: "gpt-image-1.5",
       prompt: enhancedPrompt,
       n,
       quality: "low",
       size: selectedSize,
+      background: "transparent",
+      output_format: "png",
     });
 
     const timestamp = Date.now();
