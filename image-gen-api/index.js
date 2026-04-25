@@ -46,7 +46,7 @@ if (!fs.existsSync(outputDir)) fs.mkdirSync(outputDir, { recursive: true });
 // Роздаємо статичні файли
 app.use("/output", express.static(outputDir));
 
-// 🎯 Мапа підтримуваних розмірів для gpt-image-1
+// 🎯 Мапа підтримуваних розмірів для gpt-image-2
 const sizeMap = {
   1: "1024x1024",
   2: "1536x1024",  // landscape
@@ -376,12 +376,11 @@ app.post("/generate-favicon-preview", authMiddleware, async (req, res) => {
 
     // Генеруємо на БІЛОМУ фоні для кращого результату
     const result = await openai.images.generate({
-      model: "gpt-image-1.5",
+      model: "gpt-image-2",
       prompt: `${prompt}, centered icon on clean white background, no text, professional app icon`,
       n: 1,
       quality: "low",
       size: "1024x1024",
-      background: "transparent"
     });
 
     const item = result.data[0];
@@ -624,12 +623,11 @@ app.post("/generate-favicon", authMiddleware, async (req, res) => {
 
     // 1️⃣ Генеруємо 1024×1024 з прозорим фоном
     const result = await openai.images.generate({
-      model: "gpt-image-1.5",
+      model: "gpt-image-2",
       prompt: `${prompt}, centered object, transparent background, no text`,
       n: 1,
       quality: "low",
       size: "1024x1024",
-      background: "transparent"
     });
 
     const item = result.data[0];
@@ -872,12 +870,11 @@ app.post("/generate", authMiddleware, async (req, res) => {
     console.log(`🧠 Generating ${n} images with prompt: "${enhancedPrompt}" and size: ${selectedSize}`);
 
     const result = await openai.images.generate({
-      model: "gpt-image-1.5",
+      model: "gpt-image-2",
       prompt: enhancedPrompt,
       n,
       quality: "low",
       size: selectedSize,
-      background: "transparent"
     });
 
     const timestamp = Date.now();
