@@ -247,20 +247,22 @@ app.post("/generate-ideogram", authMiddleware, async (req, res) => {
       throw new Error("IDEOGRAM_API_KEY not configured");
     }
 
-    // Build FormData for multipart/form-data request
-    const formData = new FormData();
-    formData.append('prompt', enhancedPrompt);
-    formData.append('aspect_ratio', '3x1');  // Wide logo format (3:1 aspect ratio)
-    formData.append('num_images', numImages.toString());
-    formData.append('rendering_speed', 'TURBO');
-    formData.append('magic_prompt', 'AUTO');  // AUTO gives more variation
+    // Build JSON body for transparent generation
+    const requestBody = {
+      prompt: enhancedPrompt,
+      aspect_ratio: '3x1',
+      num_images: numImages,
+      rendering_speed: 'TURBO',
+      magic_prompt: 'AUTO',
+    };
 
-    const response = await fetch("https://api.ideogram.ai/v1/ideogram-v3/generate", {
+    const response = await fetch("https://api.ideogram.ai/v1/ideogram-v3/generate-transparent", {
       method: "POST",
       headers: {
-        "Api-Key": apiKey
+        "Api-Key": apiKey,
+        "Content-Type": "application/json",
       },
-      body: formData
+      body: JSON.stringify(requestBody)
     });
 
     const data = await response.json();
@@ -297,27 +299,10 @@ app.post("/generate-ideogram", authMiddleware, async (req, res) => {
 
         const filename = `ideogram_${timestamp}_${i + 1}.png`;
         const filepath = path.join(outputDir, filename);
-        const tempPath = path.join(outputDir, `temp_${filename}`);
 
-        // Save original temporarily
-        fs.writeFileSync(tempPath, buffer);
-
-        // Try to remove background with Python rembg
-        try {
-          execSync(`python3 remove-bg.py "${tempPath}" "${filepath}"`, {
-            cwd: process.cwd(),
-            stdio: 'inherit'
-          });
-          console.log(`✅ [Ideogram] Background removed for image ${i + 1}`);
-        } catch (pythonErr) {
-          console.error(`❌ Python rembg failed for image ${i + 1}, using original`);
-          fs.writeFileSync(filepath, buffer);
-        }
-
-        // Remove temp file
-        if (fs.existsSync(tempPath)) {
-          fs.unlinkSync(tempPath);
-        }
+        // Transparent API returns PNG with alpha channel — save directly, no rembg needed
+        fs.writeFileSync(filepath, buffer);
+        console.log(`✅ [Ideogram Transparent] Image ${i + 1} saved (native transparency)`);
 
         // Trim transparent edges
         const trimmed = await sharp(filepath).trim().toBuffer();
