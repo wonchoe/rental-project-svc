@@ -9,7 +9,14 @@ import crypto from "crypto";
 dotenv.config();
 
 const app = express();
-app.use(cors({ origin: "*" }));
+app.use((req, res, next) => {
+  res.setHeader("Access-Control-Allow-Private-Network", "true");
+  next();
+});
+app.use(cors({
+  origin: "*",
+  allowedHeaders: ["Content-Type", "Authorization"],
+}));
 app.use(express.json());
 
 const GOOGLE_API_KEY = process.env.GOOGLE_API_KEY;
