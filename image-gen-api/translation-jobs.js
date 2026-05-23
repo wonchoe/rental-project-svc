@@ -384,7 +384,7 @@ export function getDownloadStats(jobId) {
 // ─── Batch API Job Functions ───────────────────────────────────
 
 // Create a batch API job (all files must have content upfront)
-export function createBatchJob(siteId, domain, files, model = 'gpt-4o-mini') {
+export function createBatchJob(siteId, domain, files, model = 'gpt-5.4-mini') {
     const jobId = generateJobId();
     
     const job = {

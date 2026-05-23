@@ -9,7 +9,7 @@ function getOpenAI() {
   return _openai;
 }
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+const DEFAULT_MODEL = 'gpt-5.4-mini';
 const MAX_RETRIES = 2;
 
 export function sanitizeTranslatedTemplate(content) {
