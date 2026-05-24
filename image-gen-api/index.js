@@ -2084,7 +2084,7 @@ async function processJob(jobId) {
                 { role: "system", content: TRANSLATION_SYSTEM_MESSAGE(file.lang) },
                 { role: "user", content: file.content },
               ],
-              max_tokens: 16000,
+              max_completion_tokens: 16000,
               temperature: 0.3,
             });
 
@@ -2169,7 +2169,7 @@ app.post("/translate-blade-batch", authMiddleware, async (req, res) => {
             { role: "system", content: systemMessage(lang) },
             { role: "user", content },
           ],
-          max_tokens: 16000,
+          max_completion_tokens: 16000,
           temperature: 0.3, // Lower temperature for more consistent translations
         });
 
@@ -2283,7 +2283,7 @@ OUTPUT RULES:
         { role: "system", content: systemMessage },
         { role: "user", content },
       ],
-      max_tokens: 16000,
+      max_completion_tokens: 16000,
       temperature: 0.3, // Lower temperature for more consistent translations
     });
 
@@ -2861,7 +2861,7 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
             { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
             { role: 'user', content: f.content },
           ],
-          max_tokens: 16000,
+          max_completion_tokens: 16000,
           temperature: 0.3,
         },
       }));
@@ -3045,7 +3045,7 @@ async function pollActiveBatches() {
                     { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
                     { role: 'user', content: f.content },
                   ],
-                  max_tokens: 16000,
+                  max_completion_tokens: 16000,
                   temperature: 0.3,
                 },
               }));

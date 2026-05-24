@@ -52,7 +52,7 @@ export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) 
           { role: 'system', content: systemMessageFn(file.lang) },
           { role: 'user', content: file.content },
         ],
-        max_tokens: 16000,
+        max_completion_tokens: 16000,
         temperature: 0.3,
       },
     };
