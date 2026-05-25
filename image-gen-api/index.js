@@ -1302,7 +1302,7 @@ function resolveOpenAIModel(requestedModel, fallbackModel = "gpt-4o-mini") {
     "gpt-5.1",
   ]);
 
-  if (raw === "gpt-5-mini" || raw === "gpt-5.4" || raw === "gpt-4.1-mini" || raw === "gpt-5") {
+  if (raw === "gpt-5-mini" || raw === "gpt-5.4" || raw === "gpt-4.1-mini" || raw === "gpt-5" || raw === "gpt-5.4-mini") {
     return "gpt-4o-mini";
   }
 
@@ -2615,7 +2615,7 @@ app.post("/translate-batch-start", authMiddleware, async (req, res) => {
       });
     }
 
-    const batchModel = model || 'gpt-5.4-mini';
+    const batchModel = model || 'gpt-4o-mini';
 
     // Create job
     const job = TranslationJobs.createBatchJob(siteId, domain, files, batchModel);
@@ -2842,7 +2842,7 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
     const jsonl = BatchTranslation.createBatchJsonl(
       filesToRetry.map((f, i) => ({ ...f, _origIndex: job.files.indexOf(f) })),
       TRANSLATION_SYSTEM_MESSAGE,
-      job.batchModel || 'gpt-5.4-mini'
+      job.batchModel || 'gpt-4o-mini'
     );
 
     // We need a new JSONL that maps back to original indices
@@ -2856,7 +2856,7 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
         method: 'POST',
         url: '/v1/chat/completions',
         body: {
-          model: job.batchModel || 'gpt-5.4-mini',
+          model: job.batchModel || 'gpt-4o-mini',
           messages: [
             { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
             { role: 'user', content: f.content },
@@ -3040,7 +3040,7 @@ async function pollActiveBatches() {
                 method: 'POST',
                 url: '/v1/chat/completions',
                 body: {
-                  model: updatedJob.batchModel || 'gpt-5.4-mini',
+                  model: updatedJob.batchModel || 'gpt-4o-mini',
                   messages: [
                     { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
                     { role: 'user', content: f.content },
