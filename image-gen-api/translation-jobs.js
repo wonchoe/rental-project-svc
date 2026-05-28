@@ -298,6 +298,7 @@ export function getJobSummary(jobId) {
         batchApiStatus: job.batchApiStatus || null,
         batchRequestCounts: job.batchRequestCounts || null,
         batchModel: job.batchModel || null,
+        batchProvider: job.batchProvider || null,
         retriesLeft: job.retriesLeft ?? null,
         validationFailedFiles: job.mode === 'batch'
             ? job.files.filter(f => f.status === 'validation_failed').length : 0,
@@ -408,6 +409,7 @@ export function createBatchJob(siteId, domain, files, model = 'gpt-4o-mini') {
         batchApiStatus: null,
         batchRequestCounts: null,
         batchModel: model,
+        batchProvider: String(model || '').toLowerCase().startsWith('gemini-') ? 'gemini' : 'openai',
         inputFileId: null,
         outputFileId: null,
         errorFileId: null,
@@ -453,6 +455,7 @@ export function updateBatchStatus(jobId, batchInfo) {
     if (batchInfo.batchApiId) job.batchApiId = batchInfo.batchApiId;
     if (batchInfo.status) job.batchApiStatus = batchInfo.status;
     if (batchInfo.requestCounts) job.batchRequestCounts = batchInfo.requestCounts;
+    if (batchInfo.provider) job.batchProvider = batchInfo.provider;
     if (batchInfo.outputFileId) job.outputFileId = batchInfo.outputFileId;
     if (batchInfo.errorFileId) job.errorFileId = batchInfo.errorFileId;
     if (batchInfo.inputFileId) job.inputFileId = batchInfo.inputFileId;

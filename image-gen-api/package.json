@@ -11,6 +11,7 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
+    "@google/genai": "^2.7.0",
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
     "express": "^5.1.0",

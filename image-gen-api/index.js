@@ -2615,7 +2615,7 @@ app.post("/translate-batch-start", authMiddleware, async (req, res) => {
       });
     }
 
-    const batchModel = model || 'gpt-4o-mini';
+    const batchModel = model || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite';
 
     // Create job
     const job = TranslationJobs.createBatchJob(siteId, domain, files, batchModel);
@@ -2644,7 +2644,7 @@ app.post("/translate-batch-start", authMiddleware, async (req, res) => {
     // Upload & start batch in background
     setImmediate(async () => {
       try {
-        const batchResult = await BatchTranslation.uploadAndStartBatch(jsonl);
+        const batchResult = await BatchTranslation.uploadAndStartBatch(jsonl, batchModel);
 
         // Update job with batch info
         TranslationJobs.updateBatchStatus(job.id, {
@@ -2652,6 +2652,7 @@ app.post("/translate-batch-start", authMiddleware, async (req, res) => {
           inputFileId: batchResult.inputFileId,
           status: batchResult.status,
           requestCounts: batchResult.requestCounts,
+          provider: batchResult.provider,
         });
         TranslationJobs.updateJob(job.id, {
           status: 'batch_submitted',
@@ -2688,7 +2689,7 @@ app.get("/translate-batch-status/:jobId", authMiddleware, async (req, res) => {
     let batchStatus = null;
     if (job.batchApiId && !['failed', 'completed', 'cancelled'].includes(job.status)) {
       try {
-        batchStatus = await BatchTranslation.pollBatchStatus(job.batchApiId);
+        batchStatus = await BatchTranslation.pollBatchStatus(job.batchApiId, job.batchProvider);
         TranslationJobs.updateBatchStatus(jobId, {
           status: batchStatus.status,
           requestCounts: batchStatus.requestCounts,
@@ -2731,7 +2732,7 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
 
     if (!job.outputFileId && job.batchApiId) {
       // Fetch latest status
-      const status = await BatchTranslation.pollBatchStatus(job.batchApiId);
+      const status = await BatchTranslation.pollBatchStatus(job.batchApiId, job.batchProvider);
       if (status.outputFileId) {
         TranslationJobs.updateBatchStatus(jobId, {
           status: status.status,
@@ -2744,10 +2745,10 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
 
     if (!job.outputFileId) {
       // Check if batch completed but all requests failed (no output, only error file)
-      if (job.batchApiStatus === 'completed' || (job.batchApiId && (await BatchTranslation.pollBatchStatus(job.batchApiId)).status === 'completed')) {
+      if (job.batchApiStatus === 'completed' || (job.batchApiId && (await BatchTranslation.pollBatchStatus(job.batchApiId, job.batchProvider)).status === 'completed')) {
         let errorMessage = 'All batch requests failed';
         if (job.errorFileId) {
-          const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId);
+          const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId, job.batchProvider);
           if (errors.length > 0) {
             const firstErr = errors[0];
             errorMessage = firstErr?.response?.body?.error?.message || firstErr?.error?.message || errorMessage;
@@ -2773,7 +2774,7 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
     }
 
     // Download results
-    const results = await BatchTranslation.downloadBatchResults(job.outputFileId);
+    const results = await BatchTranslation.downloadBatchResults(job.outputFileId, job.batchProvider);
     console.log(`📥 Downloaded ${results.length} batch results for job ${jobId}`);
 
     // Validate each result
@@ -2801,7 +2802,7 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
 
     // Download errors if any
     if (job.errorFileId) {
-      const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId);
+      const errors = await BatchTranslation.downloadBatchErrors(job.errorFileId, job.batchProvider);
       if (errors.length > 0) {
         console.log(`⚠️ Batch ${jobId} had ${errors.length} error entries`);
       }
@@ -2842,7 +2843,7 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
     const jsonl = BatchTranslation.createBatchJsonl(
       filesToRetry.map((f, i) => ({ ...f, _origIndex: job.files.indexOf(f) })),
       TRANSLATION_SYSTEM_MESSAGE,
-      job.batchModel || 'gpt-4o-mini'
+      job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite'
     );
 
     // We need a new JSONL that maps back to original indices
@@ -2856,7 +2857,7 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
         method: 'POST',
         url: '/v1/chat/completions',
         body: {
-          model: job.batchModel || 'gpt-4o-mini',
+          model: job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite',
           messages: [
             { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
             { role: 'user', content: f.content },
@@ -2869,13 +2870,14 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
     const retryJsonl = retryJsonlLines.join('\n');
 
     // Upload & start new batch
-    const batchResult = await BatchTranslation.uploadAndStartBatch(retryJsonl);
+    const batchResult = await BatchTranslation.uploadAndStartBatch(retryJsonl, job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite');
 
     TranslationJobs.updateBatchStatus(jobId, {
       batchApiId: batchResult.batchId,
       inputFileId: batchResult.inputFileId,
       status: batchResult.status,
       requestCounts: batchResult.requestCounts,
+      provider: batchResult.provider,
     });
     TranslationJobs.updateJob(jobId, {
       status: 'batch_submitted',
@@ -2913,7 +2915,7 @@ app.post("/translate-batch-cancel/:jobId", authMiddleware, async (req, res) => {
 
     if (job.batchApiId) {
       try {
-        await BatchTranslation.cancelBatch(job.batchApiId);
+        await BatchTranslation.cancelBatch(job.batchApiId, job.batchProvider);
       } catch (e) {
         console.log('Batch cancel API error (may already be done):', e.message);
       }
@@ -2966,7 +2968,7 @@ async function pollActiveBatches() {
     if (!job.batchApiId) continue;
 
     try {
-      const status = await BatchTranslation.pollBatchStatus(job.batchApiId);
+      const status = await BatchTranslation.pollBatchStatus(job.batchApiId, job.batchProvider);
 
       TranslationJobs.updateBatchStatus(job.id, {
         status: status.status,
@@ -2982,7 +2984,7 @@ async function pollActiveBatches() {
         let errorMessage = 'All batch requests failed';
         if (status.errorFileId) {
           try {
-            const errors = await BatchTranslation.downloadBatchErrors(status.errorFileId);
+            const errors = await BatchTranslation.downloadBatchErrors(status.errorFileId, job.batchProvider);
             if (errors.length > 0) {
               errorMessage = errors[0]?.response?.body?.error?.message || errors[0]?.error?.message || errorMessage;
             }
@@ -3008,7 +3010,7 @@ async function pollActiveBatches() {
       if (status.status === 'completed' && status.outputFileId) {
         console.log(`📥 Auto-downloading batch results for job ${job.id}`);
 
-        const results = await BatchTranslation.downloadBatchResults(status.outputFileId);
+        const results = await BatchTranslation.downloadBatchResults(status.outputFileId, job.batchProvider);
 
         // Validate each
         const processedResults = results.map(r => {
@@ -3040,7 +3042,7 @@ async function pollActiveBatches() {
                 method: 'POST',
                 url: '/v1/chat/completions',
                 body: {
-                  model: updatedJob.batchModel || 'gpt-4o-mini',
+                  model: updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite',
                   messages: [
                     { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
                     { role: 'user', content: f.content },
@@ -3051,12 +3053,13 @@ async function pollActiveBatches() {
               }));
             }
             if (retryLines.length > 0) {
-              const batchResult = await BatchTranslation.uploadAndStartBatch(retryLines.join('\n'));
+              const batchResult = await BatchTranslation.uploadAndStartBatch(retryLines.join('\n'), updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite');
               TranslationJobs.updateBatchStatus(updatedJob.id, {
                 batchApiId: batchResult.batchId,
                 inputFileId: batchResult.inputFileId,
                 status: batchResult.status,
                 requestCounts: batchResult.requestCounts,
+                provider: batchResult.provider,
               });
               TranslationJobs.updateJob(updatedJob.id, {
                 status: 'batch_submitted',

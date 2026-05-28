@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { GoogleGenAI } from '@google/genai';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
@@ -9,8 +10,97 @@ function getOpenAI() {
   return _openai;
 }
 
-const DEFAULT_MODEL = 'gpt-4o-mini';
+let _gemini = null;
+function getGemini() {
+  const apiKey = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '';
+  if (!apiKey) {
+    throw new Error('GEMINI_API_KEY or GOOGLE_API_KEY not configured');
+  }
+  if (!_gemini) {
+    _gemini = new GoogleGenAI({ apiKey });
+  }
+  return _gemini;
+}
+
+const DEFAULT_PROVIDER = String(process.env.TRANSLATION_BATCH_PROVIDER || 'gemini').toLowerCase() === 'openai'
+  ? 'openai'
+  : 'gemini';
+const DEFAULT_MODEL = process.env.TRANSLATION_BATCH_MODEL
+  || (DEFAULT_PROVIDER === 'gemini' ? 'gemini-2.5-flash-lite' : 'gpt-4o-mini');
 const MAX_RETRIES = 2;
+
+function inferProvider(model = '') {
+  const value = String(model || '').trim().toLowerCase();
+  if (value.startsWith('gemini-')) return 'gemini';
+  if (value.startsWith('gpt-') || value.startsWith('o1') || value.startsWith('o3') || value.startsWith('o4')) return 'openai';
+  return DEFAULT_PROVIDER;
+}
+
+function normalizeModel(model = '') {
+  const value = String(model || '').trim();
+  if (value) return value;
+  return DEFAULT_MODEL;
+}
+
+function toGeminiRequest(file, systemMessage, model) {
+  return {
+    key: `idx::${file.fileIndex}`,
+    request: {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: file.content }],
+        },
+      ],
+      system_instruction: {
+        parts: [{ text: systemMessage }],
+      },
+      generation_config: {
+        temperature: 0.3,
+        max_output_tokens: 16000,
+      },
+    },
+  };
+}
+
+function mapGeminiState(state) {
+  switch (String(state || '')) {
+    case 'JOB_STATE_PENDING':
+      return 'validating';
+    case 'JOB_STATE_RUNNING':
+      return 'in_progress';
+    case 'JOB_STATE_SUCCEEDED':
+      return 'completed';
+    case 'JOB_STATE_FAILED':
+      return 'failed';
+    case 'JOB_STATE_CANCELLED':
+      return 'cancelled';
+    case 'JOB_STATE_EXPIRED':
+      return 'expired';
+    default:
+      return String(state || '').toLowerCase() || 'unknown';
+  }
+}
+
+function extractGeminiRequestCounts(batchJob) {
+  const stats = batchJob?.batchStats || {};
+  const completed = Number(stats.completedRequestCount || 0);
+  const failed = Number(stats.failedRequestCount || 0);
+  const total = Number(stats.totalRequestCount || completed + failed || 0);
+  return { total, completed, failed };
+}
+
+async function downloadGeminiFileText(fileName) {
+  const downloadPath = path.join('/tmp', `gemini-batch-${Date.now()}-${Math.random().toString(36).slice(2)}.jsonl`);
+  await getGemini().files.download({ file: fileName, downloadPath });
+  try {
+    return fs.readFileSync(downloadPath, 'utf8');
+  } finally {
+    try {
+      fs.unlinkSync(downloadPath);
+    } catch {}
+  }
+}
 
 export function sanitizeTranslatedTemplate(content) {
   if (typeof content !== 'string') {
@@ -32,44 +122,89 @@ export function sanitizeTranslatedTemplate(content) {
 // ─── JSONL Generation ──────────────────────────────────────────
 
 /**
- * Build JSONL content for OpenAI Batch API.
- * Each line: { custom_id, method, url, body }
- * custom_id encodes file index for reliable matching: "idx::{fileIndex}"
+ * Build request payload for the configured Batch API provider.
  */
 export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) {
+  const normalizedModel = normalizeModel(model);
+  const provider = inferProvider(normalizedModel);
   const lines = [];
   let skipped = 0;
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file.content || !file.lang) { skipped++; continue; }
-    const line = {
-      custom_id: `idx::${i}`,
-      method: 'POST',
-      url: '/v1/chat/completions',
-      body: {
-        model,
-        messages: [
-          { role: 'system', content: systemMessageFn(file.lang) },
-          { role: 'user', content: file.content },
-        ],
-        max_completion_tokens: 16000,
-        temperature: 0.3,
-      },
-    };
+    const indexedFile = { ...file, fileIndex: i };
+    const line = provider === 'gemini'
+      ? toGeminiRequest(indexedFile, systemMessageFn(file.lang), normalizedModel)
+      : {
+          custom_id: `idx::${i}`,
+          method: 'POST',
+          url: '/v1/chat/completions',
+          body: {
+            model: normalizedModel,
+            messages: [
+              { role: 'system', content: systemMessageFn(file.lang) },
+              { role: 'user', content: file.content },
+            ],
+            max_completion_tokens: 16000,
+            temperature: 0.3,
+          },
+        };
     lines.push(JSON.stringify(line));
   }
   const jsonl = lines.join('\n');
-  console.log(`📝 [createBatchJsonl] Generated ${lines.length} lines (${skipped} skipped), model: ${model}, size: ${jsonl.length} bytes`);
+  console.log(`📝 [createBatchJsonl] Generated ${lines.length} lines (${skipped} skipped), provider: ${provider}, model: ${normalizedModel}, size: ${jsonl.length} bytes`);
   return jsonl;
 }
 
 // ─── Upload & Start Batch ──────────────────────────────────────
 
 /**
- * Upload JSONL to OpenAI Files API, then create a batch.
- * Returns { batchId, inputFileId }
+ * Upload JSONL to the active provider's file API, then create a batch.
+ * Returns { batchId, inputFileId, status, requestCounts, provider, model }
  */
-export async function uploadAndStartBatch(jsonlContent) {
+export async function uploadAndStartBatch(jsonlContent, model = DEFAULT_MODEL) {
+  const normalizedModel = normalizeModel(model);
+  const provider = inferProvider(normalizedModel);
+
+  if (provider === 'gemini') {
+    const tempPath = path.join('/tmp', `translations_${Date.now()}.jsonl`);
+    fs.writeFileSync(tempPath, jsonlContent, 'utf8');
+
+    try {
+      const uploaded = await getGemini().files.upload({
+        file: tempPath,
+        config: {
+          displayName: path.basename(tempPath),
+          mimeType: 'jsonl',
+        },
+      });
+      console.log(`📤 Uploaded Gemini JSONL file: ${uploaded.name} (${jsonlContent.length} bytes)`);
+
+      const batch = await getGemini().batches.create({
+        model: normalizedModel,
+        src: uploaded.name,
+        config: {
+          displayName: `rental-translation-${Date.now()}`,
+        },
+      });
+
+      console.log(`🚀 Gemini batch created: ${batch.name}, state: ${batch.state}`);
+
+      return {
+        provider,
+        model: normalizedModel,
+        batchId: batch.name,
+        inputFileId: uploaded.name,
+        status: mapGeminiState(batch.state),
+        requestCounts: extractGeminiRequestCounts(batch),
+      };
+    } finally {
+      try {
+        fs.unlinkSync(tempPath);
+      } catch {}
+    }
+  }
+
   // Upload JSONL as a file
   const blob = new Blob([jsonlContent], { type: 'application/jsonl' });
   const file = new File([blob], `translations_${Date.now()}.jsonl`, { type: 'application/jsonl' });
@@ -93,6 +228,8 @@ export async function uploadAndStartBatch(jsonlContent) {
   console.log(`🚀 Batch created: ${batch.id}, status: ${batch.status}`);
 
   return {
+    provider,
+    model: normalizedModel,
     batchId: batch.id,
     inputFileId: uploaded.id,
     status: batch.status,
@@ -105,7 +242,29 @@ export async function uploadAndStartBatch(jsonlContent) {
 /**
  * Check batch status. Returns full batch object with request_counts.
  */
-export async function pollBatchStatus(batchId) {
+export async function pollBatchStatus(batchId, provider = null) {
+  const batchProvider = provider || inferProvider(batchId);
+
+  if (batchProvider === 'gemini') {
+    const batch = await getGemini().batches.get({ name: batchId });
+    const requestCounts = extractGeminiRequestCounts(batch);
+    console.log(`🔍 [pollBatchStatus] ${batchId}: ${batch.state} — completed: ${requestCounts.completed}/${requestCounts.total}, failed: ${requestCounts.failed}`);
+    return {
+      id: batch.name,
+      status: mapGeminiState(batch.state),
+      requestCounts,
+      outputFileId: batch.dest?.fileName || null,
+      errorFileId: batch.error?.details?.fileName || null,
+      createdAt: batch.createTime,
+      completedAt: batch.endTime,
+      failedAt: batch.updateTime,
+      expiredAt: null,
+      errors: batch.error || null,
+      provider: 'gemini',
+      rawState: batch.state,
+    };
+  }
+
   const batch = await getOpenAI().batches.retrieve(batchId);
   const rc = batch.request_counts || {};
   console.log(`🔍 [pollBatchStatus] ${batchId}: ${batch.status} — completed: ${rc.completed||0}/${rc.total||0}, failed: ${rc.failed||0}`);
@@ -120,6 +279,7 @@ export async function pollBatchStatus(batchId) {
     failedAt: batch.failed_at,
     expiredAt: batch.expired_at,
     errors: batch.errors,
+    provider: 'openai',
   };
 }
 
@@ -129,10 +289,12 @@ export async function pollBatchStatus(batchId) {
  * Download batch output JSONL and parse into results array.
  * Returns array of { customId, fileIndex, translated, tokensUsed, error }
  */
-export async function downloadBatchResults(outputFileId) {
+export async function downloadBatchResults(outputFileId, provider = null) {
   console.log(`📥 [downloadBatchResults] Downloading output file: ${outputFileId}`);
-  const response = await getOpenAI().files.content(outputFileId);
-  const text = await response.text();
+  const batchProvider = provider || inferProvider(outputFileId);
+  const text = batchProvider === 'gemini'
+    ? await downloadGeminiFileText(outputFileId)
+    : await (await getOpenAI().files.content(outputFileId)).text();
   const lines = text.trim().split('\n');
   console.log(`📥 [downloadBatchResults] Downloaded ${lines.length} result lines (${text.length} bytes)`);
   const results = [];
@@ -140,9 +302,24 @@ export async function downloadBatchResults(outputFileId) {
   for (const line of lines) {
     try {
       const obj = JSON.parse(line);
-      const customId = obj.custom_id;
-      // Extract file index from "idx::0" format
-      const fileIndex = parseInt(customId.split('::')[1], 10);
+      const customId = obj.custom_id || obj.key;
+      const fileIndex = parseInt(String(customId).split('::')[1], 10);
+
+      if (batchProvider === 'gemini') {
+        const translated = sanitizeTranslatedTemplate(
+          obj.response?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || ''
+        );
+        const usage = obj.response?.usageMetadata || {};
+        const tokensUsed = Number(usage.totalTokenCount || 0);
+        results.push({
+          customId,
+          fileIndex,
+          translated: translated || null,
+          tokensUsed,
+          error: translated ? null : (obj.error?.message || 'Empty translation result'),
+        });
+        continue;
+      }
 
       if (obj.response?.status_code === 200) {
         const translated = sanitizeTranslatedTemplate(
@@ -179,11 +356,13 @@ export async function downloadBatchResults(outputFileId) {
 /**
  * Download batch error file (if any) and parse into error array.
  */
-export async function downloadBatchErrors(errorFileId) {
+export async function downloadBatchErrors(errorFileId, provider = null) {
   if (!errorFileId) return [];
   try {
-    const response = await getOpenAI().files.content(errorFileId);
-    const text = await response.text();
+    const batchProvider = provider || inferProvider(errorFileId);
+    const text = batchProvider === 'gemini'
+      ? await downloadGeminiFileText(errorFileId)
+      : await (await getOpenAI().files.content(errorFileId)).text();
     return text.trim().split('\n').map(line => {
       try { return JSON.parse(line); } catch { return { raw: line }; }
     });
@@ -284,8 +463,17 @@ function countRegex(str, regex) {
 
 // ─── Cancel Batch ──────────────────────────────────────────────
 
-export async function cancelBatch(batchId) {
+export async function cancelBatch(batchId, providerOrOptions = null) {
   try {
+    const provider = typeof providerOrOptions === 'string'
+      ? providerOrOptions
+      : providerOrOptions?.provider;
+
+    if ((provider || inferProvider(batchId)) === 'gemini') {
+      const batch = await getGemini().batches.cancel({ name: batchId });
+      console.log(`🛑 Gemini batch ${batchId} cancelled`);
+      return batch;
+    }
     const batch = await getOpenAI().batches.cancel(batchId);
     console.log(`🛑 Batch ${batchId} cancelled`);
     return batch;
