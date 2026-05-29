@@ -1,5 +1,6 @@
 import OpenAI from 'openai';
 import { GoogleGenAI } from '@google/genai';
+import { GoogleAuth } from 'google-auth-library';
 import fs from 'fs';
 import path from 'path';
 import { Readable } from 'stream';
@@ -22,22 +23,69 @@ function getGemini() {
   return _gemini;
 }
 
-const DEFAULT_PROVIDER = String(process.env.TRANSLATION_BATCH_PROVIDER || 'gemini').toLowerCase() === 'openai'
-  ? 'openai'
+let _vertexAuth = null;
+function getVertexConfig() {
+  const project = String(
+    process.env.VERTEX_TRANSLATION_PROJECT
+    || process.env.GOOGLE_CLOUD_PROJECT
+    || process.env.VERTEX_PROJECT
+    || ''
+  ).trim();
+  const location = String(
+    process.env.VERTEX_TRANSLATION_LOCATION
+    || process.env.GOOGLE_CLOUD_LOCATION
+    || process.env.VERTEX_LOCATION
+    || 'us-central1'
+  ).trim();
+
+  if (!project) {
+    throw new Error('VERTEX_TRANSLATION_PROJECT or GOOGLE_CLOUD_PROJECT not configured');
+  }
+
+  return { project, location };
+}
+
+function getVertexAuth() {
+  if (!_vertexAuth) {
+    const options = { scopes: ['https://www.googleapis.com/auth/cloud-platform'] };
+    const encodedCredentials = String(process.env.VERTEX_TRANSLATION_CREDENTIALS_BASE64 || '').trim();
+    const rawCredentials = encodedCredentials
+      ? Buffer.from(encodedCredentials, 'base64').toString('utf8')
+      : String(process.env.VERTEX_TRANSLATION_CREDENTIALS_JSON || '').trim();
+    if (rawCredentials) {
+      options.credentials = JSON.parse(rawCredentials);
+    }
+    _vertexAuth = new GoogleAuth(options);
+  }
+  return _vertexAuth;
+}
+
+const SUPPORTED_PROVIDERS = new Set(['gemini', 'vertex', 'openai']);
+const requestedDefaultProvider = String(
+  process.env.TRANSLATION_BATCH_PROVIDER
+  || process.env.TRANSLATION_PROVIDER
+  || 'gemini'
+).toLowerCase();
+const DEFAULT_PROVIDER = SUPPORTED_PROVIDERS.has(requestedDefaultProvider)
+  ? requestedDefaultProvider
   : 'gemini';
 const DEFAULT_MODEL = process.env.TRANSLATION_BATCH_MODEL
-  || (DEFAULT_PROVIDER === 'gemini' ? 'gemini-2.5-flash-lite' : 'gpt-4o-mini');
+  || (DEFAULT_PROVIDER === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash-lite');
 const MAX_RETRIES = 2;
+const VERTEX_JOB_DIR = process.env.VERTEX_TRANSLATION_JOB_DIR || '/tmp/rental-vertex-translation-jobs';
+const VERTEX_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.VERTEX_TRANSLATION_CONCURRENCY || 4)));
+const vertexJobs = new Map();
 
 function inferProvider(model = '') {
   const value = String(model || '').trim().toLowerCase();
-  if (value.startsWith('gemini-')) return 'gemini';
+  if (value.startsWith('vertex:') || value.startsWith('vertex/')) return 'vertex';
+  if (value.startsWith('gemini-')) return DEFAULT_PROVIDER === 'vertex' ? 'vertex' : 'gemini';
   if (value.startsWith('gpt-') || value.startsWith('o1') || value.startsWith('o3') || value.startsWith('o4')) return 'openai';
   return DEFAULT_PROVIDER;
 }
 
 function normalizeModel(model = '') {
-  const value = String(model || '').trim();
+  const value = String(model || '').trim().replace(/^vertex[:/]/i, '');
   if (value) return value;
   return DEFAULT_MODEL;
 }
@@ -58,6 +106,27 @@ function toGeminiRequest(file, systemMessage, model) {
       generation_config: {
         temperature: 0.3,
         max_output_tokens: 16000,
+      },
+    },
+  };
+}
+
+function toVertexRequest(file, systemMessage, model) {
+  return {
+    key: `idx::${file.fileIndex}`,
+    request: {
+      contents: [
+        {
+          role: 'user',
+          parts: [{ text: file.content }],
+        },
+      ],
+      systemInstruction: {
+        parts: [{ text: systemMessage }],
+      },
+      generationConfig: {
+        temperature: 0.3,
+        maxOutputTokens: 16000,
       },
     },
   };
@@ -102,6 +171,93 @@ async function downloadGeminiFileText(fileName) {
   }
 }
 
+function ensureVertexJobDir() {
+  fs.mkdirSync(VERTEX_JOB_DIR, { recursive: true });
+}
+
+function vertexJobFile(jobId, suffix) {
+  ensureVertexJobDir();
+  return path.join(VERTEX_JOB_DIR, `${jobId}-${suffix}.jsonl`);
+}
+
+async function callVertexGenerateContent(request, model) {
+  const { project, location } = getVertexConfig();
+  const url = `https://${location}-aiplatform.googleapis.com/v1/projects/${project}/locations/${location}/publishers/google/models/${model}:generateContent`;
+  const client = await getVertexAuth().getClient();
+  const response = await client.request({
+    url,
+    method: 'POST',
+    data: request,
+    timeout: Number(process.env.VERTEX_TRANSLATION_TIMEOUT_MS || 300000),
+  });
+  return response.data;
+}
+
+async function processVertexTranslationJob(job) {
+  const output = [];
+  const errors = [];
+  let cursor = 0;
+
+  async function worker() {
+    while (cursor < job.lines.length) {
+      if (job.status === 'cancelled') return;
+      const lineIndex = cursor++;
+      const line = job.lines[lineIndex];
+      try {
+        const item = JSON.parse(line);
+        const data = await callVertexGenerateContent(item.request, job.model);
+        const translated = sanitizeTranslatedTemplate(
+          data?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || ''
+        );
+        const usage = data?.usageMetadata || {};
+        output.push(JSON.stringify({
+          key: item.key,
+          response: data,
+          translated,
+          tokensUsed: Number(usage.totalTokenCount || 0),
+        }));
+        if (!translated) {
+          errors.push(JSON.stringify({
+            key: item.key,
+            error: { message: 'Empty translation result' },
+          }));
+          job.requestCounts.failed++;
+        } else {
+          job.requestCounts.completed++;
+        }
+      } catch (e) {
+        errors.push(JSON.stringify({
+          key: (() => {
+            try { return JSON.parse(line).key; } catch { return `line::${lineIndex}`; }
+          })(),
+          error: { message: e?.message || String(e) },
+        }));
+        job.requestCounts.failed++;
+      }
+    }
+  }
+
+  try {
+    job.status = 'in_progress';
+    await Promise.all(Array.from({ length: Math.min(VERTEX_CONCURRENCY, job.lines.length) }, () => worker()));
+    if (job.status === 'cancelled') return;
+    job.outputFileId = vertexJobFile(job.id, 'output');
+    fs.writeFileSync(job.outputFileId, output.join('\n') + (output.length ? '\n' : ''), 'utf8');
+    if (errors.length) {
+      job.errorFileId = vertexJobFile(job.id, 'errors');
+      fs.writeFileSync(job.errorFileId, errors.join('\n') + '\n', 'utf8');
+    }
+    job.status = job.requestCounts.completed > 0 ? 'completed' : 'failed';
+    job.completedAt = new Date().toISOString();
+    console.log(`✅ Vertex translation job ${job.id} finished: ${job.requestCounts.completed}/${job.requestCounts.total} completed, ${job.requestCounts.failed} failed`);
+  } catch (e) {
+    job.status = 'failed';
+    job.errors = { message: e?.message || String(e) };
+    job.failedAt = new Date().toISOString();
+    console.error(`❌ Vertex translation job ${job.id} failed:`, e?.message || e);
+  }
+}
+
 export function sanitizeTranslatedTemplate(content) {
   if (typeof content !== 'string') {
     return '';
@@ -135,7 +291,9 @@ export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) 
     const indexedFile = { ...file, fileIndex: i };
     const line = provider === 'gemini'
       ? toGeminiRequest(indexedFile, systemMessageFn(file.lang), normalizedModel)
-      : {
+      : provider === 'vertex'
+        ? toVertexRequest(indexedFile, systemMessageFn(file.lang), normalizedModel)
+        : {
           custom_id: `idx::${i}`,
           method: 'POST',
           url: '/v1/chat/completions',
@@ -165,6 +323,37 @@ export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) 
 export async function uploadAndStartBatch(jsonlContent, model = DEFAULT_MODEL) {
   const normalizedModel = normalizeModel(model);
   const provider = inferProvider(normalizedModel);
+
+  if (provider === 'vertex') {
+    const lines = jsonlContent.trim().split('\n').filter(Boolean);
+    const jobId = `vertex-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const job = {
+      id: jobId,
+      provider,
+      model: normalizedModel,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      completedAt: null,
+      failedAt: null,
+      outputFileId: null,
+      errorFileId: null,
+      errors: null,
+      lines,
+      requestCounts: { total: lines.length, completed: 0, failed: 0 },
+    };
+    vertexJobs.set(jobId, job);
+    console.log(`🚀 Vertex translation job queued: ${jobId}, ${lines.length} requests, model: ${normalizedModel}`);
+    processVertexTranslationJob(job);
+
+    return {
+      provider,
+      model: normalizedModel,
+      batchId: jobId,
+      inputFileId: null,
+      status: 'in_progress',
+      requestCounts: job.requestCounts,
+    };
+  }
 
   if (provider === 'gemini') {
     const tempPath = path.join('/tmp', `translations_${Date.now()}.jsonl`);
@@ -245,6 +434,39 @@ export async function uploadAndStartBatch(jsonlContent, model = DEFAULT_MODEL) {
 export async function pollBatchStatus(batchId, provider = null) {
   const batchProvider = provider || inferProvider(batchId);
 
+  if (batchProvider === 'vertex') {
+    const job = vertexJobs.get(batchId);
+    if (!job) {
+      return {
+        id: batchId,
+        status: 'failed',
+        requestCounts: { total: 0, completed: 0, failed: 0 },
+        outputFileId: null,
+        errorFileId: null,
+        createdAt: null,
+        completedAt: null,
+        failedAt: new Date().toISOString(),
+        expiredAt: null,
+        errors: { message: 'Vertex translation job not found in this process' },
+        provider: 'vertex',
+      };
+    }
+    console.log(`🔍 [pollBatchStatus] ${batchId}: ${job.status} — completed: ${job.requestCounts.completed}/${job.requestCounts.total}, failed: ${job.requestCounts.failed}`);
+    return {
+      id: job.id,
+      status: job.status,
+      requestCounts: job.requestCounts,
+      outputFileId: job.outputFileId,
+      errorFileId: job.errorFileId,
+      createdAt: job.createdAt,
+      completedAt: job.completedAt,
+      failedAt: job.failedAt,
+      expiredAt: null,
+      errors: job.errors,
+      provider: 'vertex',
+    };
+  }
+
   if (batchProvider === 'gemini') {
     const batch = await getGemini().batches.get({ name: batchId });
     const requestCounts = extractGeminiRequestCounts(batch);
@@ -294,7 +516,9 @@ export async function downloadBatchResults(outputFileId, provider = null) {
   const batchProvider = provider || inferProvider(outputFileId);
   const text = batchProvider === 'gemini'
     ? await downloadGeminiFileText(outputFileId)
-    : await (await getOpenAI().files.content(outputFileId)).text();
+    : batchProvider === 'vertex'
+      ? fs.readFileSync(outputFileId, 'utf8')
+      : await (await getOpenAI().files.content(outputFileId)).text();
   const lines = text.trim().split('\n');
   console.log(`📥 [downloadBatchResults] Downloaded ${lines.length} result lines (${text.length} bytes)`);
   const results = [];
@@ -305,9 +529,9 @@ export async function downloadBatchResults(outputFileId, provider = null) {
       const customId = obj.custom_id || obj.key;
       const fileIndex = parseInt(String(customId).split('::')[1], 10);
 
-      if (batchProvider === 'gemini') {
+      if (batchProvider === 'gemini' || batchProvider === 'vertex') {
         const translated = sanitizeTranslatedTemplate(
-          obj.response?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || ''
+          obj.translated || obj.response?.candidates?.[0]?.content?.parts?.map((part) => part.text || '').join('') || ''
         );
         const usage = obj.response?.usageMetadata || {};
         const tokensUsed = Number(usage.totalTokenCount || 0);
@@ -362,7 +586,9 @@ export async function downloadBatchErrors(errorFileId, provider = null) {
     const batchProvider = provider || inferProvider(errorFileId);
     const text = batchProvider === 'gemini'
       ? await downloadGeminiFileText(errorFileId)
-      : await (await getOpenAI().files.content(errorFileId)).text();
+      : batchProvider === 'vertex'
+        ? fs.readFileSync(errorFileId, 'utf8')
+        : await (await getOpenAI().files.content(errorFileId)).text();
     return text.trim().split('\n').map(line => {
       try { return JSON.parse(line); } catch { return { raw: line }; }
     });
@@ -469,7 +695,19 @@ export async function cancelBatch(batchId, providerOrOptions = null) {
       ? providerOrOptions
       : providerOrOptions?.provider;
 
-    if ((provider || inferProvider(batchId)) === 'gemini') {
+    const resolvedProvider = provider || inferProvider(batchId);
+
+    if (resolvedProvider === 'vertex') {
+      const job = vertexJobs.get(batchId);
+      if (job && !['completed', 'failed', 'cancelled'].includes(job.status)) {
+        job.status = 'cancelled';
+        job.completedAt = new Date().toISOString();
+      }
+      console.log(`🛑 Vertex translation job ${batchId} cancelled`);
+      return job || { id: batchId, status: 'cancelled' };
+    }
+
+    if (resolvedProvider === 'gemini') {
       const batch = await getGemini().batches.cancel({ name: batchId });
       console.log(`🛑 Gemini batch ${batchId} cancelled`);
       return batch;
