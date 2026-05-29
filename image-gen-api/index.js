@@ -1605,15 +1605,11 @@ async function retryBatchFailuresWithOpenAI(job, processedResults) {
 
   const retriedResults = [...processedResults];
 
-  for (let index = 0; index < retriedResults.length; index++) {
-    const result = retriedResults[index];
-    const file = job.files[result.fileIndex];
-    const shouldRetry = file?.content && (result.error || (result.validationErrors && result.validationErrors.length > 0));
+  const retryIndexes = retriedResults
+    .map((result, index) => ({ result, index, file: job.files[result.fileIndex] }))
+    .filter(({ result, file }) => file?.content && (result.error || (result.validationErrors && result.validationErrors.length > 0)));
 
-    if (!shouldRetry) {
-      continue;
-    }
-
+  await Promise.all(retryIndexes.map(async ({ result, index, file }) => {
     try {
       console.log(`🔁 [openai-fallback] Retrying ${file.path} → ${file.lang} after Gemini ${result.error ? 'error' : 'validation failure'}`);
       const completion = await openai.chat.completions.create({
@@ -1654,13 +1650,14 @@ async function retryBatchFailuresWithOpenAI(job, processedResults) {
       };
       console.error(`❌ [openai-fallback] ${file.path} → ${file.lang}: ${fallbackError.message}`);
     }
-  }
+  }));
 
   return retriedResults;
 }
 
 // Active processing flags to prevent duplicate processing
 const activeProcessing = new Set();
+const activeBatchResultProcessing = new Set();
 
 // Start a new translation job
 app.post("/translate-job-start", authMiddleware, async (req, res) => {
@@ -2786,6 +2783,19 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
     const job = TranslationJobs.getJob(jobId);
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
+    if (activeBatchResultProcessing.has(jobId)) {
+      return res.json({
+        success: true,
+        processing: true,
+        job: TranslationJobs.getJobSummary(jobId),
+        stats: {
+          completed: job.completedFiles || 0,
+          failed: job.files.filter(f => f.status === 'failed').length,
+          validationFailed: job.files.filter(f => f.status === 'validation_failed').length,
+        },
+      });
+    }
+
     // If job already failed, return cached state without re-processing
     if (job.status === 'failed') {
       return res.json({
@@ -2857,33 +2867,38 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
       return res.status(400).json({ error: 'Batch not yet completed — no output file available' });
     }
 
-    // Download results
-    const results = await BatchTranslation.downloadBatchResults(job.outputFileId, job.batchProvider);
-    console.log(`📥 Downloaded ${results.length} batch results for job ${jobId}`);
+    activeBatchResultProcessing.add(jobId);
+    try {
+      // Download results
+      const results = await BatchTranslation.downloadBatchResults(job.outputFileId, job.batchProvider);
+      console.log(`📥 Downloaded ${results.length} batch results for job ${jobId}`);
 
-    // Validate each result
-    let validOk = 0, validFail = 0;
-    const processedResults = results.map(r => {
-      const file = job.files[r.fileIndex];
-      if (!r.translated || r.error) {
+      // Validate each result
+      let validOk = 0, validFail = 0;
+      const processedResults = results.map(r => {
+        const file = job.files[r.fileIndex];
+        if (!r.translated || r.error) {
+          return { ...r, validationErrors: null };
+        }
+        if (file && file.content) {
+          const meta = `(${file.path}→${file.lang})`;
+          const validation = BatchTranslation.validateTranslation(file.content, r.translated, meta);
+          if (validation.valid) validOk++; else validFail++;
+          return {
+            ...r,
+            validationErrors: validation.valid ? null : validation.errors,
+          };
+        }
         return { ...r, validationErrors: null };
-      }
-      if (file && file.content) {
-        const meta = `(${file.path}→${file.lang})`;
-        const validation = BatchTranslation.validateTranslation(file.content, r.translated, meta);
-        if (validation.valid) validOk++; else validFail++;
-        return {
-          ...r,
-          validationErrors: validation.valid ? null : validation.errors,
-        };
-      }
-      return { ...r, validationErrors: null };
-    });
-    console.log(`✅ [batch-results] Validation: ${validOk} passed, ${validFail} failed`);
+      });
+      console.log(`✅ [batch-results] Validation: ${validOk} passed, ${validFail} failed`);
 
-    // Apply to job
-    const fallbackResults = await retryBatchFailuresWithOpenAI(job, processedResults);
-    const stats = TranslationJobs.applyBatchResults(jobId, fallbackResults);
+      // Apply to job
+      const fallbackResults = await retryBatchFailuresWithOpenAI(job, processedResults);
+      var stats = TranslationJobs.applyBatchResults(jobId, fallbackResults);
+    } finally {
+      activeBatchResultProcessing.delete(jobId);
+    }
 
     // Download errors if any
     if (job.errorFileId) {
@@ -3077,6 +3092,12 @@ async function pollActiveBatches() {
 
       // Auto-download results when batch completes
       if (status.status === 'completed' && status.outputFileId) {
+        if (activeBatchResultProcessing.has(job.id)) {
+          continue;
+        }
+
+        activeBatchResultProcessing.add(job.id);
+        try {
         console.log(`📥 Auto-downloading batch results for job ${job.id}`);
 
         const results = await BatchTranslation.downloadBatchResults(status.outputFileId, job.batchProvider);
@@ -3131,6 +3152,9 @@ async function pollActiveBatches() {
               console.log(`🚀 Retry batch submitted: ${batchResult.batchId} (${retryFiles.length} files)`);
             }
           }
+        }
+        } finally {
+          activeBatchResultProcessing.delete(job.id);
         }
       }
 
