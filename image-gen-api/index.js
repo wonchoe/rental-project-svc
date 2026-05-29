@@ -1713,7 +1713,8 @@ app.get("/translate-job-need-content/:jobId", authMiddleware, (req, res) => {
 app.get("/translate-job-active/:siteId", authMiddleware, (req, res) => {
   try {
     const { siteId } = req.params;
-    const job = TranslationJobs.getActiveJobForSite(siteId);
+    const job = TranslationJobs.getActiveJobForSite(siteId)
+      || TranslationJobs.getLatestJobForSite(siteId);
 
     if (!job) {
       return res.json({ success: true, job: null });

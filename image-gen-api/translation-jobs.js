@@ -135,6 +135,12 @@ export function getActiveJobForSite(siteId) {
     ) || null;
 }
 
+export function getLatestJobForSite(siteId) {
+    return Object.values(jobsCache)
+        .filter(job => job.siteId === siteId)
+        .sort((left, right) => (right.updatedAt || 0) - (left.updatedAt || 0))[0] || null;
+}
+
 // Update job
 export function updateJob(jobId, updates) {
     if (!jobsCache[jobId]) return null;
