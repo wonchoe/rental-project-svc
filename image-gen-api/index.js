@@ -1,5 +1,5 @@
 import express from "express";
-import dotenv from "dotenv";
+import "dotenv/config";
 import OpenAI from "openai";
 import fs from "fs";
 import path from "path";
@@ -8,8 +8,6 @@ import cors from "cors";
 import { execSync } from "child_process";
 import * as TranslationJobs from "./translation-jobs.js";
 import * as BatchTranslation from "./batch-translation.js";
-
-dotenv.config();
 
 const app = express();
 const PROXY_BASE_URL = process.env.PROXY_BASE_URL || null; // URL Laravel proxy
