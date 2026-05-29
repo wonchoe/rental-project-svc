@@ -11,6 +11,7 @@ import * as BatchTranslation from "./batch-translation.js";
 
 const app = express();
 const PROXY_BASE_URL = process.env.PROXY_BASE_URL || null; // URL Laravel proxy
+const TERMINAL_BATCH_STATUSES = new Set(['failed', 'completed', 'completed_with_errors', 'cancelled', 'stopped', 'resumed']);
 
 // 🔥 Максимально відкритий CORS (все дозволено)
 app.use(cors({
@@ -2685,7 +2686,7 @@ app.get("/translate-batch-status/:jobId", authMiddleware, async (req, res) => {
     if (!job) return res.status(404).json({ error: 'Job not found' });
 
     let batchStatus = null;
-    if (job.batchApiId && !['failed', 'completed', 'cancelled'].includes(job.status)) {
+    if (job.batchApiId && !TERMINAL_BATCH_STATUSES.has(job.status)) {
       try {
         batchStatus = await BatchTranslation.pollBatchStatus(job.batchApiId, job.batchProvider);
         TranslationJobs.updateBatchStatus(jobId, {
@@ -2726,6 +2727,24 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
         error: job.error || 'Batch failed',
         job: TranslationJobs.getJobSummary(jobId),
       });
+    }
+
+    if (['completed', 'completed_with_errors'].includes(job.status)) {
+      const pendingResultFiles = job.files.filter(f =>
+        ['batch_queued', 'batch_submitted', 'pending', 'processing'].includes(f.status)
+      ).length;
+      if (pendingResultFiles === 0) {
+        return res.json({
+          success: true,
+          cached: true,
+          job: TranslationJobs.getJobSummary(jobId),
+          stats: {
+            completed: job.completedFiles || 0,
+            failed: job.files.filter(f => f.status === 'failed').length,
+            validationFailed: job.files.filter(f => f.status === 'validation_failed').length,
+          },
+        });
+      }
     }
 
     if (!job.outputFileId && job.batchApiId) {
@@ -2836,36 +2855,14 @@ app.post("/translate-batch-retry/:jobId", authMiddleware, async (req, res) => {
     // Reset files for retry
     const resetCount = TranslationJobs.resetFilesForRetry(jobId);
 
-    // Build JSONL with only the retry files
-    const filesToRetry = job.files.filter(f => f.status === 'batch_queued');
-    const jsonl = BatchTranslation.createBatchJsonl(
-      filesToRetry.map((f, i) => ({ ...f, _origIndex: job.files.indexOf(f) })),
+    const filesToRetry = job.files
+      .map((f, i) => ({ ...f, fileIndex: i }))
+      .filter(f => f.status === 'batch_queued');
+    const retryJsonl = BatchTranslation.createBatchJsonl(
+      filesToRetry,
       TRANSLATION_SYSTEM_MESSAGE,
       job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite'
     );
-
-    // We need a new JSONL that maps back to original indices
-    // Rebuild with correct indices
-    const retryJsonlLines = [];
-    for (let i = 0; i < job.files.length; i++) {
-      const f = job.files[i];
-      if (f.status !== 'batch_queued') continue;
-      retryJsonlLines.push(JSON.stringify({
-        custom_id: `idx::${i}`,
-        method: 'POST',
-        url: '/v1/chat/completions',
-        body: {
-          model: job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite',
-          messages: [
-            { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
-            { role: 'user', content: f.content },
-          ],
-          max_completion_tokens: 16000,
-          temperature: 0.3,
-        },
-      }));
-    }
-    const retryJsonl = retryJsonlLines.join('\n');
 
     // Upload & start new batch
     const batchResult = await BatchTranslation.uploadAndStartBatch(retryJsonl, job.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite');
@@ -2921,6 +2918,12 @@ app.post("/translate-batch-cancel/:jobId", authMiddleware, async (req, res) => {
 
     TranslationJobs.updateJob(jobId, { status: 'stopped' });
     TranslationJobs.updateBatchStatus(jobId, { status: 'cancelled' });
+    job.files.forEach(f => {
+      if (['batch_queued', 'batch_submitted', 'pending', 'processing'].includes(f.status)) {
+        f.status = 'stopped';
+      }
+    });
+    TranslationJobs.updateJob(jobId, { files: job.files });
 
     res.json({
       success: true,
@@ -3031,27 +3034,16 @@ async function pollActiveBatches() {
           const resetCount = TranslationJobs.resetFilesForRetry(job.id);
           if (resetCount > 0) {
             const updatedJob = TranslationJobs.getJob(job.id);
-            const retryLines = [];
-            for (let i = 0; i < updatedJob.files.length; i++) {
-              const f = updatedJob.files[i];
-              if (f.status !== 'batch_queued') continue;
-              retryLines.push(JSON.stringify({
-                custom_id: `idx::${i}`,
-                method: 'POST',
-                url: '/v1/chat/completions',
-                body: {
-                  model: updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite',
-                  messages: [
-                    { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(f.lang) },
-                    { role: 'user', content: f.content },
-                  ],
-                  max_completion_tokens: 16000,
-                  temperature: 0.3,
-                },
-              }));
-            }
-            if (retryLines.length > 0) {
-              const batchResult = await BatchTranslation.uploadAndStartBatch(retryLines.join('\n'), updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite');
+            const retryFiles = updatedJob.files
+              .map((f, i) => ({ ...f, fileIndex: i }))
+              .filter(f => f.status === 'batch_queued');
+            if (retryFiles.length > 0) {
+              const retryJsonl = BatchTranslation.createBatchJsonl(
+                retryFiles,
+                TRANSLATION_SYSTEM_MESSAGE,
+                updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite'
+              );
+              const batchResult = await BatchTranslation.uploadAndStartBatch(retryJsonl, updatedJob.batchModel || process.env.TRANSLATION_BATCH_MODEL || 'gemini-2.5-flash-lite');
               TranslationJobs.updateBatchStatus(updatedJob.id, {
                 batchApiId: batchResult.batchId,
                 inputFileId: batchResult.inputFileId,
@@ -3067,7 +3059,7 @@ async function pollActiveBatches() {
                 if (f.status === 'batch_queued') f.status = 'batch_submitted';
               });
               TranslationJobs.updateJob(updatedJob.id, { files: updatedJob.files });
-              console.log(`🚀 Retry batch submitted: ${batchResult.batchId} (${retryLines.length} files)`);
+              console.log(`🚀 Retry batch submitted: ${batchResult.batchId} (${retryFiles.length} files)`);
             }
           }
         }

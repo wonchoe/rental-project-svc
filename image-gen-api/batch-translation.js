@@ -73,7 +73,7 @@ const DEFAULT_MODEL = process.env.TRANSLATION_BATCH_MODEL
   || (DEFAULT_PROVIDER === 'openai' ? 'gpt-4o-mini' : 'gemini-2.5-flash-lite');
 const MAX_RETRIES = 2;
 const VERTEX_JOB_DIR = process.env.VERTEX_TRANSLATION_JOB_DIR || '/tmp/rental-vertex-translation-jobs';
-const VERTEX_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.VERTEX_TRANSLATION_CONCURRENCY || 4)));
+const VERTEX_CONCURRENCY = Math.max(1, Math.min(20, Number(process.env.VERTEX_CONCURRENCY || process.env.VERTEX_TRANSLATION_CONCURRENCY || 4)));
 const vertexJobs = new Map();
 
 function inferProvider(model = '') {
@@ -288,7 +288,10 @@ export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) 
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     if (!file.content || !file.lang) { skipped++; continue; }
-    const indexedFile = { ...file, fileIndex: i };
+    const indexedFile = {
+      ...file,
+      fileIndex: Number.isInteger(file.fileIndex) ? file.fileIndex : i,
+    };
     const line = provider === 'gemini'
       ? toGeminiRequest(indexedFile, systemMessageFn(file.lang), normalizedModel)
       : provider === 'vertex'
