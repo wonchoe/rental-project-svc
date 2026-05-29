@@ -1598,6 +1598,67 @@ OUTPUT RULES:
 `;
 };
 
+async function retryBatchFailuresWithOpenAI(job, processedResults) {
+  if (!job || job.batchProvider !== 'gemini') {
+    return processedResults;
+  }
+
+  const retriedResults = [...processedResults];
+
+  for (let index = 0; index < retriedResults.length; index++) {
+    const result = retriedResults[index];
+    const file = job.files[result.fileIndex];
+    const shouldRetry = file?.content && (result.error || (result.validationErrors && result.validationErrors.length > 0));
+
+    if (!shouldRetry) {
+      continue;
+    }
+
+    try {
+      console.log(`🔁 [openai-fallback] Retrying ${file.path} → ${file.lang} after Gemini ${result.error ? 'error' : 'validation failure'}`);
+      const completion = await openai.chat.completions.create({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: TRANSLATION_SYSTEM_MESSAGE(file.lang) },
+          { role: 'user', content: file.content },
+        ],
+        max_completion_tokens: 16000,
+        temperature: 0.2,
+      });
+
+      const translated = BatchTranslation.sanitizeTranslatedTemplate(
+        completion?.choices?.[0]?.message?.content || ''
+      );
+
+      if (!translated) {
+        throw new Error('Empty translation result from OpenAI fallback');
+      }
+
+      const validation = BatchTranslation.validateTranslation(file.content, translated, `(${file.path}→${file.lang}) [openai-fallback]`);
+
+      retriedResults[index] = {
+        ...result,
+        translated,
+        error: validation.valid ? null : 'OpenAI fallback validation failed',
+        validationErrors: validation.valid ? null : validation.errors,
+        fallbackProvider: 'openai',
+      };
+
+      console.log(`✅ [openai-fallback] ${validation.valid ? 'Recovered' : 'Still invalid'} ${file.path} → ${file.lang}`);
+    } catch (fallbackError) {
+      retriedResults[index] = {
+        ...result,
+        error: `${result.error || 'Gemini validation failed'} | OpenAI fallback failed: ${fallbackError.message}`,
+        validationErrors: result.validationErrors || null,
+        fallbackProvider: 'openai',
+      };
+      console.error(`❌ [openai-fallback] ${file.path} → ${file.lang}: ${fallbackError.message}`);
+    }
+  }
+
+  return retriedResults;
+}
+
 // Active processing flags to prevent duplicate processing
 const activeProcessing = new Set();
 
@@ -2821,7 +2882,8 @@ app.post("/translate-batch-results/:jobId", authMiddleware, async (req, res) => 
     console.log(`✅ [batch-results] Validation: ${validOk} passed, ${validFail} failed`);
 
     // Apply to job
-    const stats = TranslationJobs.applyBatchResults(jobId, processedResults);
+    const fallbackResults = await retryBatchFailuresWithOpenAI(job, processedResults);
+    const stats = TranslationJobs.applyBatchResults(jobId, fallbackResults);
 
     // Download errors if any
     if (job.errorFileId) {
@@ -3031,7 +3093,8 @@ async function pollActiveBatches() {
           return { ...r, validationErrors: null };
         });
 
-        const stats = TranslationJobs.applyBatchResults(job.id, processedResults);
+        const fallbackResults = await retryBatchFailuresWithOpenAI(job, processedResults);
+        const stats = TranslationJobs.applyBatchResults(job.id, fallbackResults);
         console.log(`✅ Batch ${job.id} results applied: ${stats.completed} ok, ${stats.failed} failed, ${stats.validationFailed} validation errors`);
 
         // Auto-retry if there are failed files and retries left
