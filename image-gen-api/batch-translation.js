@@ -145,7 +145,7 @@ export function createBatchJsonl(files, systemMessageFn, model = DEFAULT_MODEL) 
     const line = provider === 'gemini'
       ? toGeminiRequest(indexedFile, systemMessageFn(file.lang), normalizedModel)
       : {
-          custom_id: `idx::${i}`,
+          custom_id: `idx::${indexedFile.fileIndex}`,
           method: 'POST',
           url: '/v1/chat/completions',
           body: {
